@@ -12,7 +12,7 @@ no runtime to install.
 Install with Cargo (Rust 1.88 or newer; TLS uses the system OpenSSL):
 
 ```sh
-cargo install --git https://github.com/linsomniac/quasseltui
+cargo install --git https://github.com/neheb/quasseltui --branch rust-port
 quasseltui --help
 ```
 
@@ -22,8 +22,14 @@ Or from a clone:
 cargo run --release -- --help
 ```
 
-Release builds for Linux are attached to each
-[GitHub release](https://github.com/linsomniac/quasseltui/releases).
+Static Linux binaries for x86_64 and 32-bit ARMv7 (armhf) are attached to
+each [GitHub release](https://github.com/neheb/quasseltui/releases); they
+don't depend on the system's glibc or OpenSSL. With
+[mise](https://mise.jdx.dev):
+
+```sh
+mise use -g github:neheb/quasseltui
+```
 
 ## Config file
 

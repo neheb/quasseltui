@@ -5,15 +5,16 @@ All notable changes to quasseltui are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.10.0] - 2026-10-03
 
 ### Changed
 
 - **Rewritten in Rust.** quasseltui is now a single native binary built on
-  Tokio, ratatui and crossterm. Install it with
-  `cargo install --git https://github.com/linsomniac/quasseltui`; release
-  builds attach a Linux binary instead of publishing to PyPI. The
-  subcommands, flags, config file, exit codes, and keys are unchanged.
+  Tokio, ratatui and crossterm. Install it with `mise use -g
+  github:neheb/quasseltui` or `cargo install --git
+  https://github.com/neheb/quasseltui --branch rust-port`; releases attach
+  static Linux binaries (x86_64 and ARMv7) instead of publishing to PyPI. The subcommands, flags, config file, exit codes, and
+  keys are unchanged.
 - **Colors follow the terminal.** The UI uses the terminal's own palette, so
   a themed terminal themes quasseltui. On Omarchy the theme's accent, muted,
   and selection colors are read too, and a theme switch applies live.
@@ -113,4 +114,5 @@ tests.
 
 - Expanded the README with additional usage examples.
 
+[0.10.0]: https://github.com/neheb/quasseltui/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/linsomniac/quasseltui/compare/v0.9.0...v0.9.1

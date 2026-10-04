@@ -1,26 +1,29 @@
 # quasseltui
 
 Terminal client for [Quassel IRC](https://www.quassel-irc.org/) cores. Connects
-to your existing `quasselcore` and gives you a Textual-based TUI as an
-alternative to `quasselclient` (the Qt GUI) or Quasseldroid.
+to your existing `quasselcore` and gives you a terminal UI as an alternative to
+`quasselclient` (the Qt GUI) or Quasseldroid. It's a single Rust binary with
+no runtime to install.
 
 ![quasseltui in action](docs/screenshot.png)
 
 ## Quick start
 
-Run via UVX without downloading/installing:
+Install with Cargo (Rust 1.88 or newer; TLS uses the system OpenSSL):
 
 ```sh
-uvx --from git+https://github.com/linsomniac/quasseltui@main quasseltui
+cargo install --git https://github.com/linsomniac/quasseltui
+quasseltui --help
 ```
 
-Run via UV:
+Or from a clone:
 
 ```sh
-#  clone this repo, then:
-uv sync
-uv run python -m quasseltui --help
+cargo run --release -- --help
 ```
+
+Release builds for Linux are attached to each
+[GitHub release](https://github.com/linsomniac/quasseltui/releases).
 
 ## Config file
 
@@ -74,10 +77,15 @@ Any command-line flag still overrides the corresponding config value.
 | --- | --- |
 | `Ctrl+Q` | Quit |
 | `Ctrl+R` | Reconnect after a disconnect (history is kept; the gap is re-fetched) |
-| `Alt+Up` / `Alt+Down` | Previous / next buffer |
+| `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next buffer |
+| `Tab` / `Shift+Tab` | Move focus: input, scrollback, sidebar |
+| `PgUp` / `PgDn`, mouse wheel | Scroll the scrollback |
 | `Up` / `Down` (in the input bar) | Recall previously sent lines |
 | `Enter` (empty input bar) | Move the read marker to the newest message |
 | `Tab` into the log, then `Enter` on a row | Place the read marker on that message |
+| `Enter` in the sidebar, or click | Switch to that buffer |
+| `Esc` | Back to the input bar |
+| `F1` (or `?` outside the input) | Show all keys |
 
 Buffers with unseen activity are bold in the sidebar; highlights and
 private messages are bold yellow. Read state and markers sync through
@@ -88,12 +96,41 @@ Set `QUASSELTUI_LOG=/path/to/file` to capture runtime log output for
 debugging — by default the TUI swallows it so it can't corrupt the
 screen.
 
+## Colors
+
+The UI uses your terminal's own colors: the default foreground and
+background, plus the named ANSI colors for meaning (yellow for highlights,
+red for errors). A themed terminal themes quasseltui too.
+
+On [Omarchy](https://omarchy.org), the current theme's `accent`, `muted`
+and `selection` colors are also read from
+`~/.local/state/omarchy/current/theme/colors.toml` for focus borders, the
+active buffer, and the cursor row. Switching themes updates a running
+quasseltui within a second. This needs a truecolor terminal
+(`COLORTERM=truecolor`, which Omarchy's terminals set); elsewhere the accent
+falls back to ANSI blue. `NO_COLOR` turns colors off.
+
+## Headless commands
+
+`probe-only`, `login-only`, `stream-only`, and `dump-state` exercise the
+protocol without the UI, which is handy for checking a core or debugging.
+They exit with distinct codes: 0 ok, 1 bad arguments or credentials,
+2 connect failed, 3 core rejected the client, 4 protocol error, 5 TLS
+downgrade refused, 6 core not configured, 7 login rejected, 130 interrupted.
+
 ## Development
 
 ```sh
-uv run pytest          # unit tests
-uv run ruff check      # lint
-uv run ruff format     # format
-uv run mypy src        # type-check
-uv run lint-imports    # enforce layer boundaries
+cargo test                                   # unit tests
+cargo clippy --all-targets -- -D warnings    # lint
+cargo fmt                                    # format
 ```
+
+The code is layered bottom to top: `qt` (Qt binary serialization),
+`protocol` (probe, TLS, handshake, SignalProxy, connection), `sync` (the
+syncable object model and `ClientState`), `client` (the embeddable client),
+and `app` (the terminal UI).
+
+`tests/live_core.rs` runs against a real core when `QUASSEL_TEST_HOST` (and
+`QUASSEL_TEST_PORT`, `QUASSEL_TEST_USER`, `QUASSEL_TEST_PASSWORD`, optionally
+`QUASSEL_TEST_INSECURE=1`) are set; otherwise it skips.

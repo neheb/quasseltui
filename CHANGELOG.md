@@ -5,6 +5,43 @@ All notable changes to quasseltui are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Rewritten in Rust.** quasseltui is now a single native binary built on
+  Tokio, ratatui and crossterm. Install it with
+  `cargo install --git https://github.com/linsomniac/quasseltui`; release
+  builds attach a Linux binary instead of publishing to PyPI. The
+  subcommands, flags, config file, exit codes, and keys are unchanged.
+- **Colors follow the terminal.** The UI uses the terminal's own palette, so
+  a themed terminal themes quasseltui. On Omarchy the theme's accent, muted,
+  and selection colors are read too, and a theme switch applies live.
+- Scrolling is anchored to the message at the top of the view, so incoming
+  messages, fetched history, and window resizes never move what you're
+  reading.
+- Writes to the core go through a single queue, so a reply, a typed line,
+  and a history request can no longer interleave on the wire. Closing the
+  connection flushes what was already queued.
+
+### Added
+
+- `F1` shows every key; `PgUp`/`PgDn` and the mouse wheel scroll from
+  anywhere; `Ctrl+P`/`Ctrl+N` switch buffers; clicking a buffer switches to
+  it; `Esc` returns to the input bar.
+- `tests/live_core.rs`, an opt-in end-to-end test against a real core.
+
+### Fixed
+
+- Server lines without a sender (such as topic announcements) no longer
+  show a dangling `: `.
+
+### Removed
+
+- The Python package, the PyPI release job, and the developer-only
+  `tests/tools/capture_session.py` (`stream-only -v` covers live
+  inspection).
+
 ## [0.9.1] - 2026-06-01
 
 This release is a stability and "feels less flaky" pass over the live client.

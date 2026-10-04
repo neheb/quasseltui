@@ -1,21 +1,12 @@
-name: Publish to PyPI
+name: Release
 
-# Publishes `quasseltui` to PyPI whenever a GitHub release is published.
-# The release tag (e.g. `v1.2.3`) is stamped into pyproject.toml and
-# `src/quasseltui/__init__.py` just before building, so the sdist, wheel,
-# and the assets attached to the GitHub release all carry that version.
-#
-# Uses PyPI trusted publishing (OIDC) — no API token required. Configure once at:
-#   https://pypi.org/manage/project/quasseltui/settings/publishing/
-# with:
-#   - Owner:          linsomniac
-#   - Repository:     quasseltui
-#   - Workflow name:  release.yml
-#   - Environment:    pypi
+# Builds a Linux binary whenever a GitHub release is published and attaches
+# it to the release. The release tag (e.g. `v1.2.3`) is stamped into
+# Cargo.toml just before building, so `quasseltui --version` and the
+# client version sent to the core both carry it.
 #
 # Release flow: `git tag vX.Y.Z && git push --tags`, then create a GitHub
-# release for that tag. Publication and asset attachment happen on
-# release-published — no manual version bump in the tree is needed.
+# release for that tag. No manual version bump in the tree is needed.
 
 on:
   release:
@@ -30,20 +21,26 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   build:
-    name: Build distribution
+    name: Build ${{ matrix.target }}
     runs-on: ubuntu-latest
     permissions:
       contents: write  # required to attach assets to the GitHub release
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          python-version: "3.12"
+          targets: ${{ matrix.target }}
 
       - name: Resolve version
         id: version
@@ -60,47 +57,40 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "Resolved version: ${version:-<none — keeping committed version>}"
 
-      - name: Stamp version into sources
+      - name: Stamp version into Cargo.toml
         if: steps.version.outputs.version != ''
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          sed -i -E 's/^version = ".*"/version = "'"$VERSION"'"/' pyproject.toml
-          sed -i -E 's/^__version__ = ".*"/__version__ = "'"$VERSION"'"/' src/quasseltui/__init__.py
-          grep -E '^(version|__version__) = ' pyproject.toml src/quasseltui/__init__.py
+          sed -i -E '0,/^version = ".*"/s//version = "'"$VERSION"'"/' Cargo.toml
+          cargo update --workspace
+          grep -E '^version = ' Cargo.toml
 
-      - name: Build sdist and wheel
-        run: uv build
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Upload distributions (workflow artifact)
+      - name: Package
+        id: package
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          name="quasseltui-${VERSION:-dev}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/quasseltui" README.md LICENSE CHANGELOG.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          echo "archive=dist/$name.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload (workflow artifact)
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: quasseltui-${{ matrix.target }}
+          path: ${{ steps.package.outputs.archive }}
           if-no-files-found: error
 
-      - name: Attach distributions to GitHub release
+      - name: Attach to GitHub release
         if: github.event_name == 'release'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ github.event.release.tag_name }}
-        run: gh release upload "$TAG_NAME" dist/* --clobber
-
-  publish:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/quasseltui
-    permissions:
-      id-token: write  # required for trusted publishing
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+        run: gh release upload "$TAG_NAME" "${{ steps.package.outputs.archive }}" --clobber

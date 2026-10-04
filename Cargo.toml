@@ -1,0 +1,35 @@
+[package]
+name = "quasseltui"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal client for Quassel IRC cores"
+license = "CC0-1.0"
+readme = "README.md"
+repository = "https://github.com/linsomniac/quasseltui"
+homepage = "https://github.com/linsomniac/quasseltui"
+keywords = ["quassel", "irc", "tui", "terminal", "chat"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+clap = { version = "4", features = ["derive"] }
+crossterm = { version = "0.29", features = ["event-stream"] }
+futures = "0.3"
+native-tls = "0.2"
+ratatui = "0.30"
+rpassword = "7"
+socket2 = "0.6"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-native-tls = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+unicode-width = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true

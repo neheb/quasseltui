@@ -74,7 +74,6 @@ fn render_tree(
     theme: &Theme,
     area: Rect,
 ) -> Vec<Option<BufferId>> {
-    let focused = app.focus == Focus::Tree;
     let inner_width = usize::from(area.width.saturating_sub(2));
     let mut lines: Vec<(Line<'static>, Option<BufferId>)> = Vec::new();
     let buffers = ordered_buffers(&app.state);
@@ -106,9 +105,6 @@ fn render_tree(
             if Some(buf.buffer_id) == app.active_buffer_id {
                 style = theme.accent_style();
             }
-            if focused && Some(buf.buffer_id) == app.tree_cursor {
-                style = style.patch(theme.selection_style());
-            }
             let text = format!("{:<inner_width$}", truncate(&label, inner_width));
             lines.push((Line::from(Span::styled(text, style)), Some(buf.buffer_id)));
         }
@@ -116,7 +112,7 @@ fn render_tree(
 
     // Keep the cursor (or the active buffer) on screen.
     let height = usize::from(area.height.saturating_sub(2));
-    let target = app.tree_cursor.or(app.active_buffer_id);
+    let target = app.active_buffer_id;
     let target_line = lines
         .iter()
         .position(|(_, id)| id.is_some() && *id == target);
@@ -129,7 +125,7 @@ fn render_tree(
         .map(|(line, _)| line)
         .collect();
     frame.render_widget(
-        Paragraph::new(text).block(block(" Buffers ", focused, theme)),
+        Paragraph::new(text).block(block(" Buffers ", false, theme)),
         area,
     );
     rows
@@ -246,6 +242,15 @@ fn render_input(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
         .filter(|n| !n.is_empty());
     let title = nick.map_or_else(String::new, |n| format!(" {n} "));
     let mut input_block = block(title, focused, theme);
+    if app.focus == Focus::Log && !app.input.disabled {
+        input_block = input_block.title_bottom(
+            Line::from(Span::styled(
+                " NORMAL · j/k move · J/K channels · i to type ",
+                theme.accent_style(),
+            ))
+            .right_aligned(),
+        );
+    }
     if app.input.disabled {
         input_block = input_block.border_style(theme.fg(theme.error));
     }
@@ -334,35 +339,29 @@ fn render_toasts(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 const HELP: &[(&str, &str)] = &[
     ("Ctrl+Q", "Quit"),
     ("Ctrl+R", "Reconnect after a disconnect"),
+    ("Esc or Tab", "Typing ↔ normal mode"),
     (
         "Alt+Up / Alt+Down",
-        "Previous / next buffer (also Ctrl+P / Ctrl+N)",
+        "Previous / next channel (any mode; also Ctrl+P / Ctrl+N)",
     ),
-    ("Tab / Shift+Tab", "Move focus: input, scrollback, sidebar"),
-    ("PgUp / PgDn", "Scroll the scrollback"),
-    ("Up / Down (input)", "Recall sent lines"),
+    ("PgUp / PgDn", "Scroll (any mode)"),
+    ("Up / Down (typing)", "Recall sent lines"),
     (
         "Enter (empty input)",
         "Move the read marker to the newest message",
     ),
     (
-        "Esc (input)",
-        "Leave the input for the scrollback (normal mode)",
+        "j / k, Down / Up",
+        "Normal: move through the current channel",
     ),
-    ("j / k", "Move the cursor (scrollback, sidebar)"),
+    ("J / K, Shift+Down/Up", "Normal: next / previous channel"),
     (
         "Ctrl+D / Ctrl+U",
-        "Scroll half a page (Ctrl+E / Ctrl+Y: a line)",
+        "Normal: half a page (Ctrl+E / Ctrl+Y: a line)",
     ),
-    ("g / G", "First / last message or buffer"),
-    ("J / K", "Next / previous buffer"),
-    ("h / l", "Sidebar / open the buffer under the cursor"),
-    (
-        "Enter (scrollback)",
-        "Place the read marker on that message",
-    ),
-    ("Enter (sidebar)", "Switch to that buffer"),
-    ("i or Esc", "Back to the input"),
+    ("g / G", "Normal: first / last message"),
+    ("Enter (normal)", "Place the read marker on that message"),
+    ("i", "Normal: back to typing"),
     ("F1 or ?", "This help"),
 ];
 

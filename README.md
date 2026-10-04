@@ -79,25 +79,27 @@ see them again.
 
 ## Keys
 
+quasseltui has two modes, like aerc or vim. You start out **typing**; `Esc`
+(or `Tab`) switches to **normal** mode, where single keys navigate. The input
+bar shows `NORMAL` while you're in it.
+
 | Key | Action |
 | --- | --- |
 | `Ctrl+Q` | Quit |
 | `Ctrl+R` | Reconnect after a disconnect (history is kept; the gap is re-fetched) |
-| `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next buffer |
-| `Tab` / `Shift+Tab` | Move focus: input, scrollback, sidebar |
-| `PgUp` / `PgDn`, mouse wheel | Scroll the scrollback |
-| `Up` / `Down` (in the input bar) | Recall previously sent lines |
+| `Esc` / `Tab` | Switch between typing and normal mode |
+| `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next channel, in either mode |
+| `PgUp` / `PgDn`, mouse wheel | Scroll, in either mode |
+| `Up` / `Down` (typing) | Recall previously sent lines |
 | `Enter` (empty input bar) | Move the read marker to the newest message |
-| `Tab` into the log, then `Enter` on a row | Place the read marker on that message |
-| `Enter` in the sidebar, or click | Switch to that buffer |
-| `Esc` (input bar) | Leave typing for the scrollback ("normal mode") |
-| `j` / `k` | Move the cursor in the scrollback or sidebar |
-| `Ctrl+D` / `Ctrl+U` | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
-| `g` / `G` | First / last message (or buffer, in the sidebar) |
-| `J` / `K` | Next / previous buffer |
-| `h` / `l` | Go to the sidebar / open the buffer under the cursor |
-| `i` or `Esc` | Back to the input bar |
-| `F1` (or `?` outside the input) | Show all keys |
+| `j` / `k` or `Down` / `Up` (normal) | Move through the current channel |
+| `J` / `K` or `Shift+Down` / `Shift+Up` (normal) | Next / previous channel |
+| `Ctrl+D` / `Ctrl+U` (normal) | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
+| `g` / `G` (normal) | First / last message |
+| `Enter` (normal) | Place the read marker on the selected message |
+| `i` (normal) | Back to typing |
+| Click a channel | Switch to it |
+| `F1` (or `?` in normal mode) | Show all keys |
 
 Buffers with unseen activity are bold in the sidebar; highlights and
 private messages are bold yellow. Read state and markers sync through

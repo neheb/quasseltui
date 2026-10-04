@@ -26,10 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Vim-style navigation: `Esc` leaves the input bar for the scrollback, where
-  `j`/`k` move, `Ctrl+D`/`Ctrl+U` scroll half a page, `g`/`G` jump to the
-  ends, `J`/`K` switch buffers, `h`/`l` go through the sidebar, and `i`
-  returns to typing.
+- aerc-style navigation: `Esc` (or `Tab`) switches from typing to a normal
+  mode where `j`/`k` move through the current channel and `J`/`K` switch to
+  the next/previous channel immediately; `Ctrl+D`/`Ctrl+U` scroll half a
+  page, `g`/`G` jump to the ends, and `i` returns to typing. The input bar
+  shows `NORMAL` in that mode. The sidebar is no longer a separate focus
+  stop with its own cursor.
 - `hide_joins_parts = true` in the `[quasseltui]` config section hides
   joins, parts, quits, and netsplits from the scrollback, and they no longer
   mark a buffer unread.

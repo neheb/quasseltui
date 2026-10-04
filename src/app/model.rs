@@ -62,9 +62,10 @@ impl Toast {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    /// Typing in the input bar.
     Input,
+    /// Normal mode: keys navigate the current channel and the channel list.
     Log,
-    Tree,
 }
 
 /// Unread level of a non-active buffer.
@@ -229,8 +230,6 @@ pub struct App {
     pub buffer_activity: HashMap<BufferId, Activity>,
     pub input: InputBar,
     pub log: LogView,
-    /// The sidebar cursor.
-    pub tree_cursor: Option<BufferId>,
     pub focus: Focus,
     pub show_help: bool,
     pub exit: Option<Exit>,
@@ -258,7 +257,6 @@ impl App {
             buffer_activity: HashMap::new(),
             input: InputBar::default(),
             log: LogView::default(),
-            tree_cursor: None,
             focus: Focus::Input,
             show_help: false,
             exit: None,
@@ -419,7 +417,6 @@ impl App {
     /// once per session.
     fn active_updated(&mut self, buffer: Option<BufferId>) -> Vec<Effect> {
         self.log.set_buffer(buffer);
-        self.tree_cursor = buffer;
         let mut effects = Vec::new();
         if let Some(id) = buffer {
             self.buffer_activity.remove(&id);
@@ -645,8 +642,6 @@ impl App {
 
     /// A click on a sidebar buffer.
     pub fn click_buffer(&mut self, buffer: BufferId) -> Vec<Effect> {
-        self.focus = Focus::Tree;
-        self.tree_cursor = Some(buffer);
         self.select_buffer(buffer)
     }
 
@@ -716,12 +711,8 @@ impl App {
                 self.show_help = true;
                 return Vec::new();
             }
-            KeyCode::Tab => {
-                self.cycle_focus(1);
-                return Vec::new();
-            }
-            KeyCode::BackTab => {
-                self.cycle_focus(-1);
+            KeyCode::Tab | KeyCode::BackTab => {
+                self.toggle_focus();
                 return Vec::new();
             }
             KeyCode::PageUp => {
@@ -737,20 +728,17 @@ impl App {
 
         match self.focus {
             Focus::Input => self.input_key(key, ctrl),
-            Focus::Log => self.log_key(key),
-            Focus::Tree => self.tree_key(key),
+            Focus::Log => self.normal_key(key),
         }
     }
 
-    fn cycle_focus(&mut self, delta: isize) {
-        let order = if self.input.disabled {
-            vec![Focus::Log, Focus::Tree]
-        } else {
-            vec![Focus::Input, Focus::Log, Focus::Tree]
+    /// Tab: switch between typing and normal mode.
+    fn toggle_focus(&mut self) {
+        let next = match self.focus {
+            Focus::Input => Focus::Log,
+            Focus::Log => Focus::Input,
         };
-        let current = order.iter().position(|f| *f == self.focus).unwrap_or(0);
-        self.focus = order[(current as isize + delta).rem_euclid(order.len() as isize) as usize];
-        self.focused();
+        self.set_focus(next);
     }
 
     pub fn set_focus(&mut self, focus: Focus) {
@@ -762,16 +750,8 @@ impl App {
     }
 
     fn focused(&mut self) {
-        match self.focus {
-            Focus::Log => self.log.on_focus(&self.state),
-            Focus::Tree => {
-                if self.tree_cursor.is_none() {
-                    self.tree_cursor = self
-                        .active_buffer_id
-                        .or_else(|| ordered_buffer_ids(&self.state).first().copied());
-                }
-            }
-            Focus::Input => {}
+        if self.focus == Focus::Log {
+            self.log.on_focus(&self.state);
         }
     }
 
@@ -810,9 +790,11 @@ impl App {
         Vec::new()
     }
 
-    /// Scrollback ("normal mode") keys, vim-flavoured.
-    fn log_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    /// Normal-mode keys, aerc-style: lowercase navigates within the
+    /// current channel, uppercase through the channel list.
+    fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let half_page = (self.log.height as isize / 2).max(1);
         match key.code {
             KeyCode::Char('d') if ctrl => self.log.scroll_lines(&self.state, half_page),
@@ -820,61 +802,20 @@ impl App {
             KeyCode::Char('e') if ctrl => self.log.scroll_lines(&self.state, 1),
             KeyCode::Char('y') if ctrl => self.log.scroll_lines(&self.state, -1),
             _ if ctrl => {}
+            KeyCode::Char('K') => return self.cycle_buffer(-1),
+            KeyCode::Char('J') => return self.cycle_buffer(1),
+            KeyCode::Up if shift => return self.cycle_buffer(-1),
+            KeyCode::Down if shift => return self.cycle_buffer(1),
             KeyCode::Up | KeyCode::Char('k') => self.log.move_highlight(&self.state, -1),
             KeyCode::Down | KeyCode::Char('j') => self.log.move_highlight(&self.state, 1),
             KeyCode::Home | KeyCode::Char('g') => self.log.highlight_first(&self.state),
             KeyCode::End | KeyCode::Char('G') => self.log.highlight_last(&self.state),
-            KeyCode::Char('K') => return self.cycle_buffer(-1),
-            KeyCode::Char('J') => return self.cycle_buffer(1),
-            KeyCode::Left | KeyCode::Char('h') => self.set_focus(Focus::Tree),
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter => {
                 if let (Some(buffer), Some(msg)) = (self.log.buffer, self.log.highlighted) {
                     return self.place_marker(buffer, msg);
                 }
-            }
-            _ => {}
-        }
-        Vec::new()
-    }
-
-    fn tree_key(&mut self, key: KeyEvent) -> Vec<Effect> {
-        let ordered = ordered_buffer_ids(&self.state);
-        let current = self
-            .tree_cursor
-            .and_then(|c| ordered.iter().position(|id| *id == c));
-        let move_to = |delta: isize| {
-            if ordered.is_empty() {
-                return None;
-            }
-            let i = current.map_or(0, |i| {
-                (i as isize + delta).clamp(0, ordered.len() as isize - 1) as usize
-            });
-            Some(ordered[i])
-        };
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => self.tree_cursor = move_to(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.tree_cursor = move_to(1),
-            KeyCode::Home | KeyCode::Char('g') => self.tree_cursor = ordered.first().copied(),
-            KeyCode::End | KeyCode::Char('G') => self.tree_cursor = ordered.last().copied(),
-            KeyCode::Char('K') => return self.cycle_buffer(-1),
-            KeyCode::Char('J') => return self.cycle_buffer(1),
-            KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(target) = self.tree_cursor {
-                    return self.select_buffer(target);
-                }
-            }
-            // Open the buffer under the cursor and read it.
-            KeyCode::Right | KeyCode::Char('l') => {
-                let effects = self
-                    .tree_cursor
-                    .map(|t| self.select_buffer(t))
-                    .unwrap_or_default();
-                self.set_focus(Focus::Log);
-                return effects;
             }
             _ => {}
         }

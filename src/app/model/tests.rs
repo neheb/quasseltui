@@ -101,7 +101,6 @@ fn session_opened_picks_default_and_requests_backlog() {
     let effects = app.on_client_event(&opened());
     assert_eq!(app.active_buffer_id, Some(BufferId(10)));
     assert_eq!(effects, [Effect::RequestBacklog(BufferId(10))]);
-    assert_eq!(app.tree_cursor, Some(BufferId(10)));
     assert_eq!(app.log.buffer, Some(BufferId(10)));
 }
 
@@ -212,7 +211,6 @@ fn removing_the_active_buffer_repicks() {
         buffer_id: BufferId(11),
     });
     assert_eq!(app.active_buffer_id, None);
-    assert_eq!(app.tree_cursor, None);
     assert_eq!(app.log.buffer, None);
 }
 
@@ -420,19 +418,6 @@ fn alt_arrows_cycle_in_sidebar_order() {
 }
 
 #[test]
-fn tree_navigation_selects_buffers() {
-    let mut app = live_app();
-    app.on_client_event(&opened());
-    app.set_focus(Focus::Tree);
-    app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Down));
-    assert_eq!(app.tree_cursor, Some(BufferId(12)));
-    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
-    app.on_key(key(KeyCode::Enter));
-    assert_eq!(app.active_buffer_id, Some(BufferId(12)));
-}
-
-#[test]
 fn backlog_failure_releases_latch_and_notifies() {
     let mut app = live_app();
     app.on_client_event(&opened());
@@ -533,7 +518,7 @@ fn shift(c: char) -> KeyEvent {
 }
 
 #[test]
-fn vim_normal_mode_navigation() {
+fn aerc_style_normal_mode() {
     let mut app = live_app();
     app.on_client_event(&opened());
     for i in 1..=40 {
@@ -541,18 +526,21 @@ fn vim_normal_mode_navigation() {
     }
     app.log.set_viewport(80, 10);
 
-    // Esc leaves typing; j/k move the cursor without typing anything.
+    // Esc leaves typing; j/k and the arrows move within the channel
+    // without typing anything.
     type_text(&mut app, "draft");
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Log);
     assert_eq!(app.log.highlighted, Some(MsgId(40)));
     app.on_key(key(KeyCode::Char('k')));
-    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Up));
     app.on_key(key(KeyCode::Char('j')));
     assert_eq!(app.log.highlighted, Some(MsgId(39)));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.log.highlighted, Some(MsgId(40)));
     assert_eq!(app.input.value, "draft");
 
-    // g/G jump; Ctrl+U/Ctrl+D scroll half a page.
+    // g/G jump; Ctrl+U/Ctrl+D scroll half a page and leave the draft alone.
     app.on_key(key(KeyCode::Char('g')));
     assert_eq!(app.log.highlighted, Some(MsgId(1)));
     app.on_key(shift('G'));
@@ -561,27 +549,44 @@ fn vim_normal_mode_navigation() {
     assert!(!app.log.follow_tail);
     app.on_key(ctrl('d'));
     assert!(app.log.follow_tail);
-    assert_eq!(
-        app.input.value, "draft",
-        "Ctrl+U in normal mode doesn't clear the input"
-    );
+    assert_eq!(app.input.value, "draft");
 
-    // J/K switch buffers, h/l go through the sidebar, i returns to typing.
+    // J/K and Shift+arrows switch channels immediately.
     app.on_key(shift('J'));
     assert_eq!(app.active_buffer_id, Some(BufferId(11)));
-    app.on_key(shift('K'));
-    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
-    app.on_key(key(KeyCode::Char('h')));
-    assert_eq!(app.focus, Focus::Tree);
-    app.on_key(key(KeyCode::Char('j')));
-    app.on_key(key(KeyCode::Char('j')));
-    app.on_key(key(KeyCode::Char('l')));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
-    assert_eq!(app.focus, Focus::Log);
+    app.on_key(shift('K'));
+    app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+
+    // i (or Esc, or Tab) goes back to typing.
     app.on_key(key(KeyCode::Char('i')));
     assert_eq!(app.focus, Focus::Input);
     type_text(&mut app, "!");
     assert_eq!(app.input.value, "draft!");
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Focus::Log);
+    app.on_key(key(KeyCode::Tab));
+    assert_eq!(app.focus, Focus::Input);
+}
+
+#[test]
+fn letters_type_while_typing() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    type_text(&mut app, "jkJK");
+    assert_eq!(app.input.value, "jkJK");
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+}
+
+#[test]
+fn clicking_a_buffer_switches_without_changing_mode() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    app.click_buffer(BufferId(12));
+    assert_eq!(app.active_buffer_id, Some(BufferId(12)));
+    assert_eq!(app.focus, Focus::Input);
 }
 
 fn join(id: i64, buffer: i32) -> IrcMessage {

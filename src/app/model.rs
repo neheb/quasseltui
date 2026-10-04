@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::format::{ordered_buffer_ids, pick_default_buffer};
+use crate::app::format::{DisplaySettings, ordered_buffer_ids, pick_default_buffer};
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, IrcMessage};
 use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId};
@@ -279,6 +279,11 @@ impl App {
         app
     }
 
+    /// Apply display preferences (from the config file).
+    pub fn set_display(&mut self, settings: DisplaySettings) {
+        self.log.settings = settings;
+    }
+
     pub fn is_live(&self) -> bool {
         self.live
     }
@@ -379,7 +384,10 @@ impl App {
             self.ever_active = true;
             effects.extend(self.active_updated(Some(buffer)));
         }
-        if Some(buffer) != self.active_buffer_id && !message.flags.contains(MessageFlags::SELF) {
+        if Some(buffer) != self.active_buffer_id
+            && !message.flags.contains(MessageFlags::SELF)
+            && self.log.settings.shows(message)
+        {
             let highlight = message.flags.contains(MessageFlags::HIGHLIGHT)
                 || self
                     .state
@@ -599,10 +607,13 @@ impl App {
         let Some(active) = self.active_buffer_id else {
             return Vec::new();
         };
+        let settings = self.log.settings;
         let Some(last) = self
             .state
             .messages_for_buffer(active)
-            .last()
+            .iter()
+            .rev()
+            .find(|m| settings.shows(m))
             .map(|m| m.msg_id)
         else {
             return Vec::new();
@@ -779,7 +790,8 @@ impl App {
             KeyCode::End => input.cursor = input.value.chars().count(),
             KeyCode::Backspace => input.backspace(),
             KeyCode::Delete => input.delete(),
-            KeyCode::Esc => {}
+            // Leave typing for the scrollback, like vim's normal mode.
+            KeyCode::Esc => self.set_focus(Focus::Log),
             KeyCode::Char('a') if ctrl => input.cursor = 0,
             KeyCode::Char('e') if ctrl => input.cursor = input.value.chars().count(),
             KeyCode::Char('u') if ctrl => {
@@ -798,14 +810,25 @@ impl App {
         Vec::new()
     }
 
+    /// Scrollback ("normal mode") keys, vim-flavoured.
     fn log_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let half_page = (self.log.height as isize / 2).max(1);
         match key.code {
+            KeyCode::Char('d') if ctrl => self.log.scroll_lines(&self.state, half_page),
+            KeyCode::Char('u') if ctrl => self.log.scroll_lines(&self.state, -half_page),
+            KeyCode::Char('e') if ctrl => self.log.scroll_lines(&self.state, 1),
+            KeyCode::Char('y') if ctrl => self.log.scroll_lines(&self.state, -1),
+            _ if ctrl => {}
             KeyCode::Up | KeyCode::Char('k') => self.log.move_highlight(&self.state, -1),
             KeyCode::Down | KeyCode::Char('j') => self.log.move_highlight(&self.state, 1),
             KeyCode::Home | KeyCode::Char('g') => self.log.highlight_first(&self.state),
             KeyCode::End | KeyCode::Char('G') => self.log.highlight_last(&self.state),
+            KeyCode::Char('K') => return self.cycle_buffer(-1),
+            KeyCode::Char('J') => return self.cycle_buffer(1),
+            KeyCode::Left | KeyCode::Char('h') => self.set_focus(Focus::Tree),
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Esc => self.set_focus(Focus::Input),
+            KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter => {
                 if let (Some(buffer), Some(msg)) = (self.log.buffer, self.log.highlighted) {
                     return self.place_marker(buffer, msg);
@@ -835,12 +858,23 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => self.tree_cursor = move_to(1),
             KeyCode::Home | KeyCode::Char('g') => self.tree_cursor = ordered.first().copied(),
             KeyCode::End | KeyCode::Char('G') => self.tree_cursor = ordered.last().copied(),
+            KeyCode::Char('K') => return self.cycle_buffer(-1),
+            KeyCode::Char('J') => return self.cycle_buffer(1),
             KeyCode::Char('?') => self.show_help = true,
-            KeyCode::Esc => self.set_focus(Focus::Input),
+            KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 if let Some(target) = self.tree_cursor {
                     return self.select_buffer(target);
                 }
+            }
+            // Open the buffer under the cursor and read it.
+            KeyCode::Right | KeyCode::Char('l') => {
+                let effects = self
+                    .tree_cursor
+                    .map(|t| self.select_buffer(t))
+                    .unwrap_or_default();
+                self.set_focus(Focus::Log);
+                return effects;
             }
             _ => {}
         }

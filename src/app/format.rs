@@ -70,6 +70,28 @@ fn is_event(kind: MessageType) -> bool {
     )
 }
 
+/// What the scrollback shows. Hidden messages stay in the state; they are
+/// only left out of the display and don't count as unread activity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DisplaySettings {
+    /// Hide joins, parts, quits, and netsplit joins/quits.
+    pub hide_joins_parts: bool,
+}
+
+impl DisplaySettings {
+    pub fn shows(&self, msg: &IrcMessage) -> bool {
+        !(self.hide_joins_parts
+            && matches!(
+                msg.kind,
+                MessageType::Join
+                    | MessageType::Part
+                    | MessageType::Quit
+                    | MessageType::NetsplitJoin
+                    | MessageType::NetsplitQuit
+            ))
+    }
+}
+
 /// The nick part of a `nick!user@host` sender.
 pub fn short_sender(sender: &str) -> &str {
     sender.split('!').next().unwrap_or(sender)

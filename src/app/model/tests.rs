@@ -527,3 +527,87 @@ fn demo_app_shows_content_immediately() {
     assert_eq!(app.active_buffer_id, Some(BufferId(11)));
     assert_eq!(app.log.buffer, Some(BufferId(11)));
 }
+
+fn shift(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+}
+
+#[test]
+fn vim_normal_mode_navigation() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    for i in 1..=40 {
+        deliver(&mut app, message(i, 10, MessageFlags::NONE));
+    }
+    app.log.set_viewport(80, 10);
+
+    // Esc leaves typing; j/k move the cursor without typing anything.
+    type_text(&mut app, "draft");
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Log);
+    assert_eq!(app.log.highlighted, Some(MsgId(40)));
+    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('k')));
+    app.on_key(key(KeyCode::Char('j')));
+    assert_eq!(app.log.highlighted, Some(MsgId(39)));
+    assert_eq!(app.input.value, "draft");
+
+    // g/G jump; Ctrl+U/Ctrl+D scroll half a page.
+    app.on_key(key(KeyCode::Char('g')));
+    assert_eq!(app.log.highlighted, Some(MsgId(1)));
+    app.on_key(shift('G'));
+    assert_eq!(app.log.highlighted, Some(MsgId(40)));
+    app.on_key(ctrl('u'));
+    assert!(!app.log.follow_tail);
+    app.on_key(ctrl('d'));
+    assert!(app.log.follow_tail);
+    assert_eq!(
+        app.input.value, "draft",
+        "Ctrl+U in normal mode doesn't clear the input"
+    );
+
+    // J/K switch buffers, h/l go through the sidebar, i returns to typing.
+    app.on_key(shift('J'));
+    assert_eq!(app.active_buffer_id, Some(BufferId(11)));
+    app.on_key(shift('K'));
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+    app.on_key(key(KeyCode::Char('h')));
+    assert_eq!(app.focus, Focus::Tree);
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Char('l')));
+    assert_eq!(app.active_buffer_id, Some(BufferId(12)));
+    assert_eq!(app.focus, Focus::Log);
+    app.on_key(key(KeyCode::Char('i')));
+    assert_eq!(app.focus, Focus::Input);
+    type_text(&mut app, "!");
+    assert_eq!(app.input.value, "draft!");
+}
+
+fn join(id: i64, buffer: i32) -> IrcMessage {
+    IrcMessage {
+        kind: MessageType::Join,
+        ..message(id, buffer, MessageFlags::NONE)
+    }
+}
+
+#[test]
+fn hidden_joins_parts_dont_mark_activity_or_take_the_marker() {
+    let mut app = live_app();
+    app.set_display(crate::app::format::DisplaySettings {
+        hide_joins_parts: true,
+    });
+    app.on_client_event(&opened());
+    deliver(&mut app, join(1, 11));
+    assert!(app.buffer_activity.is_empty());
+    deliver(&mut app, message(2, 11, MessageFlags::NONE));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(11)),
+        Some(&Activity::Message)
+    );
+
+    deliver(&mut app, message(3, 10, MessageFlags::NONE));
+    deliver(&mut app, join(4, 10));
+    let effects = app.on_key(key(KeyCode::Enter));
+    assert_eq!(effects, [Effect::SetMarkerLine(BufferId(10), MsgId(3))]);
+}

@@ -345,13 +345,24 @@ const HELP: &[(&str, &str)] = &[
         "Enter (empty input)",
         "Move the read marker to the newest message",
     ),
-    ("Up / Down (scrollback)", "Move the cursor"),
+    (
+        "Esc (input)",
+        "Leave the input for the scrollback (normal mode)",
+    ),
+    ("j / k", "Move the cursor (scrollback, sidebar)"),
+    (
+        "Ctrl+D / Ctrl+U",
+        "Scroll half a page (Ctrl+E / Ctrl+Y: a line)",
+    ),
+    ("g / G", "First / last message or buffer"),
+    ("J / K", "Next / previous buffer"),
+    ("h / l", "Sidebar / open the buffer under the cursor"),
     (
         "Enter (scrollback)",
         "Place the read marker on that message",
     ),
     ("Enter (sidebar)", "Switch to that buffer"),
-    ("Esc", "Back to the input"),
+    ("i or Esc", "Back to the input"),
     ("F1 or ?", "This help"),
 ];
 

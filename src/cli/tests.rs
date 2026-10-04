@@ -23,6 +23,7 @@ fn config_with(servers: Vec<ServerConfig>, default: Option<&str>) -> Config {
     Config {
         path: PathBuf::from("/tmp/config.ini"),
         default_server: default.map(String::from),
+        hide_joins_parts: false,
         servers: servers.into_iter().map(|s| (s.name.clone(), s)).collect(),
     }
 }

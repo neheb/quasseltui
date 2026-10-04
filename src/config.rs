@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 const MAIN_SECTION: &str = "quasseltui";
 const SERVER_PREFIX: &str = "server:";
+const ALLOWED_MAIN_KEYS: [&str; 2] = ["default_server", "hide_joins_parts"];
 const ALLOWED_SERVER_KEYS: [&str; 8] = [
     "cafile",
     "connect_timeout",
@@ -65,6 +66,8 @@ pub struct ServerConfig {
 pub struct Config {
     pub path: PathBuf,
     pub default_server: Option<String>,
+    /// Leave joins, parts, quits and netsplits out of the scrollback.
+    pub hide_joins_parts: bool,
     pub servers: BTreeMap<String, ServerConfig>,
 }
 
@@ -113,18 +116,37 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     };
 
     let mut default_server = None;
+    let mut hide_joins_parts = false;
     let mut servers = BTreeMap::new();
     for (section, values) in &sections {
         if section == "DEFAULT" {
             continue;
         }
         if section == MAIN_SECTION {
-            let value = with_defaults(values)
+            // Only the section's own keys: [DEFAULT] entries are meant for
+            // the server sections.
+            for key in values.keys() {
+                if !ALLOWED_MAIN_KEYS.contains(&key.as_str()) {
+                    return Err(ConfigError(format!(
+                        "{shown}: [{MAIN_SECTION}] unknown setting '{key}' (allowed: {})",
+                        ALLOWED_MAIN_KEYS.join(", ")
+                    )));
+                }
+            }
+            let merged = with_defaults(values);
+            let value = merged
                 .get("default_server")
                 .map(|v| v.trim().to_string())
                 .unwrap_or_default();
             if !value.is_empty() {
                 default_server = Some(value);
+            }
+            if let Some(raw) = merged.get("hide_joins_parts") {
+                hide_joins_parts = parse_bool(raw)
+                    .map_err(|e| {
+                        ConfigError(format!("{shown}: [{MAIN_SECTION}] hide_joins_parts: {e}"))
+                    })?
+                    .unwrap_or(false);
             }
             continue;
         }
@@ -153,6 +175,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     Ok(Some(Config {
         path,
         default_server,
+        hide_joins_parts,
         servers,
     }))
 }
@@ -180,14 +203,10 @@ fn parse_server(
             .filter(|v| !v.is_empty())
     };
     let boolean = |key: &str| -> Result<Option<bool>, ConfigError> {
-        let Some(raw) = text(key) else {
-            return Ok(None);
-        };
-        match raw.to_lowercase().as_str() {
-            "1" | "yes" | "true" | "on" => Ok(Some(true)),
-            "0" | "no" | "false" | "off" => Ok(Some(false)),
-            _ => Err(field_error(key, format!("Not a boolean: {raw}"))),
-        }
+        values
+            .get(key)
+            .map_or(Ok(None), |raw| parse_bool(raw))
+            .map_err(|e| field_error(key, e))
     };
     let port =
         match text("port") {
@@ -233,6 +252,17 @@ fn parse_server(
         cafile: text("cafile"),
         connect_timeout,
     })
+}
+
+/// configparser's booleans; an empty value means "not set".
+fn parse_bool(raw: &str) -> Result<Option<bool>, String> {
+    let raw = raw.trim();
+    match raw.to_lowercase().as_str() {
+        "" => Ok(None),
+        "1" | "yes" | "true" | "on" => Ok(Some(true)),
+        "0" | "no" | "false" | "off" => Ok(Some(false)),
+        _ => Err(format!("Not a boolean: {raw}")),
+    }
 }
 
 /// Parse INI text into section -> key -> value, configparser-style.
@@ -382,6 +412,20 @@ mod tests {
         assert!(load_err("[server:a]\nhost\n").contains("parsing errors"));
         assert!(load_err("[server:a]\n[server:a]\n").contains("already exists"));
         assert!(load_err("[server:a]\nhost = x\nhost = y\n").contains("already exists"));
+    }
+
+    #[test]
+    fn hide_joins_parts_option() {
+        assert!(!load_ok("[server:home]\nhost = x\n").hide_joins_parts);
+        assert!(load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_joins_parts);
+        assert!(!load_ok("[quasseltui]\nhide_joins_parts = off\n").hide_joins_parts);
+        assert!(load_err("[quasseltui]\nhide_joins_parts = maybe\n").contains("hide_joins_parts"));
+        assert!(load_err("[quasseltui]\nhide_join_parts = true\n").contains("unknown setting"));
+        // [DEFAULT] keys meant for servers don't trip the main-section check.
+        assert!(
+            load_ok("[DEFAULT]\nport = 4242\n[quasseltui]\n[server:a]\n").servers["a"].port
+                == Some(4242)
+        );
     }
 
     #[test]

@@ -38,6 +38,7 @@ Example:
 ```ini
 [quasseltui]
 default_server = home
+# hide_joins_parts = false  (true hides joins, parts, quits and netsplits)
 
 [server:home]
 host = irc.example.com
@@ -71,6 +72,11 @@ With a config in place, three shortcuts become available:
 
 Any command-line flag still overrides the corresponding config value.
 
+`hide_joins_parts = true` in `[quasseltui]` leaves joins, parts, quits, and
+netsplit joins/quits out of the scrollback. They also stop counting as
+unread activity. Nothing is discarded: turn the option off and restart to
+see them again.
+
 ## Keys
 
 | Key | Action |
@@ -84,7 +90,13 @@ Any command-line flag still overrides the corresponding config value.
 | `Enter` (empty input bar) | Move the read marker to the newest message |
 | `Tab` into the log, then `Enter` on a row | Place the read marker on that message |
 | `Enter` in the sidebar, or click | Switch to that buffer |
-| `Esc` | Back to the input bar |
+| `Esc` (input bar) | Leave typing for the scrollback ("normal mode") |
+| `j` / `k` | Move the cursor in the scrollback or sidebar |
+| `Ctrl+D` / `Ctrl+U` | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
+| `g` / `G` | First / last message (or buffer, in the sidebar) |
+| `J` / `K` | Next / previous buffer |
+| `h` / `l` | Go to the sidebar / open the buffer under the cursor |
+| `i` or `Esc` | Back to the input bar |
 | `F1` (or `?` outside the input) | Show all keys |
 
 Buffers with unseen activity are bold in the sidebar; highlights and

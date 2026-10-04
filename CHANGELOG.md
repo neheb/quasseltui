@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Vim-style navigation: `Esc` leaves the input bar for the scrollback, where
+  `j`/`k` move, `Ctrl+D`/`Ctrl+U` scroll half a page, `g`/`G` jump to the
+  ends, `J`/`K` switch buffers, `h`/`l` go through the sidebar, and `i`
+  returns to typing.
+- `hide_joins_parts = true` in the `[quasseltui]` config section hides
+  joins, parts, quits, and netsplits from the scrollback, and they no longer
+  mark a buffer unread.
 - `F1` shows every key; `PgUp`/`PgDn` and the mouse wheel scroll from
   anywhere; `Ctrl+P`/`Ctrl+N` switch buffers; clicking a buffer switches to
   it; `Esc` returns to the input bar.

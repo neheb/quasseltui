@@ -19,6 +19,7 @@ use futures::{FutureExt, StreamExt};
 use ratatui::layout::{Margin, Position};
 use tokio::sync::mpsc;
 
+use crate::app::format::DisplaySettings;
 use crate::app::model::{App, Effect, Exit};
 use crate::app::theme::ThemeWatcher;
 use crate::app::view::{self, Areas};
@@ -48,7 +49,11 @@ const EVENT_BATCH: usize = 512;
 
 /// Run the UI until the user quits or a fatal error. With no factory the
 /// app runs offline (the demo).
-pub async fn run(state: ClientState, factory: Option<ClientFactory>) -> io::Result<Exit> {
+pub async fn run(
+    state: ClientState,
+    factory: Option<ClientFactory>,
+    display: DisplaySettings,
+) -> io::Result<Exit> {
     // Set up the terminal before connecting: without one there is no point
     // opening a session.
     let mut terminal = ratatui::try_init().map_err(|e| {
@@ -64,6 +69,7 @@ pub async fn run(state: ClientState, factory: Option<ClientFactory>) -> io::Resu
 
     let mut client = factory.as_ref().map(|make| make());
     let mut app = App::new(state, client.is_some(), factory.is_some());
+    app.set_display(display);
     let result = event_loop(&mut terminal, &mut app, &mut client, factory.as_ref()).await;
     let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
     ratatui::restore();

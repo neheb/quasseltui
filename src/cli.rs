@@ -26,6 +26,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 
 use crate::app::demo::build_demo_state;
+use crate::app::format::DisplaySettings;
 use crate::client::{ClientState, QuasselClient};
 use crate::config::{self, Config, ConfigError};
 use crate::protocol::connection::{
@@ -513,8 +514,25 @@ fn interruptible(
     })
 }
 
+/// UI preferences from the config file.
+fn display_settings(command: &str) -> Result<DisplaySettings, ExitCode> {
+    match config::load(None) {
+        Ok(cfg) => Ok(DisplaySettings {
+            hide_joins_parts: cfg.is_some_and(|c| c.hide_joins_parts),
+        }),
+        Err(e) => {
+            eprintln!("{command}: config: {e}");
+            Err(ExitCode::from(1))
+        }
+    }
+}
+
 async fn run_ui_demo() -> ExitCode {
-    match crate::app::run(build_demo_state(), None).await {
+    let display = match display_settings("ui-demo") {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
+    match crate::app::run(build_demo_state(), None, display).await {
         Ok(exit) => ExitCode::from(exit.code as u8),
         Err(e) => {
             eprintln!("ui-demo: terminal error: {e}");
@@ -531,6 +549,10 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
+    let display = match display_settings("ui") {
+        Ok(d) => d,
+        Err(code) => return code,
+    };
     let (user, password) = match credentials("ui", &resolved) {
         Ok(c) => c,
         Err(code) => return code,
@@ -539,7 +561,7 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
     let options = resolved.connection_options(&user, &password);
     let factory: crate::app::ClientFactory =
         Box::new(move || QuasselClient::connect(options.clone()));
-    match crate::app::run(ClientState::default(), Some(factory)).await {
+    match crate::app::run(ClientState::default(), Some(factory), display).await {
         Ok(exit) => {
             if let Some(message) = exit.message {
                 eprintln!("{message}");

@@ -13,7 +13,7 @@
 use chrono::{Local, NaiveDate};
 use unicode_width::UnicodeWidthChar;
 
-use crate::app::format::{Segment, SegmentKind, format_message, local_time};
+use crate::app::format::{DisplaySettings, Segment, SegmentKind, format_message, local_time};
 use crate::client::ClientState;
 use crate::protocol::types::{BufferId, MsgId};
 
@@ -55,12 +55,23 @@ impl Row {
 /// before the first message at all when it isn't from today: a quiet
 /// buffer's backlog can span weeks, and time-only stamps would make it all
 /// look like today's traffic. The marker row goes right after the marked
-/// message.
-pub fn build_rows(state: &ClientState, buffer: BufferId, today: NaiveDate) -> Vec<Row> {
+/// message, or where it would have been if that message is hidden.
+pub fn build_rows(
+    state: &ClientState,
+    buffer: BufferId,
+    today: NaiveDate,
+    settings: &DisplaySettings,
+) -> Vec<Row> {
     let marker = state.read_markers.get(&buffer).copied();
     let mut rows = Vec::new();
     let mut previous_date = today;
     for msg in state.messages_for_buffer(buffer) {
+        if !settings.shows(msg) {
+            if marker == Some(msg.msg_id) {
+                rows.push(marker_row());
+            }
+            continue;
+        }
         let date = local_time(msg.timestamp).date_naive();
         if date != previous_date {
             rows.push(Row {
@@ -77,16 +88,20 @@ pub fn build_rows(state: &ClientState, buffer: BufferId, today: NaiveDate) -> Ve
             segments: format_message(msg),
         });
         if marker == Some(msg.msg_id) {
-            rows.push(Row {
-                key: RowKey::Marker,
-                segments: vec![Segment {
-                    text: MARKER_TEXT.into(),
-                    kind: SegmentKind::Prefix,
-                }],
-            });
+            rows.push(marker_row());
         }
     }
     rows
+}
+
+fn marker_row() -> Row {
+    Row {
+        key: RowKey::Marker,
+        segments: vec![Segment {
+            text: MARKER_TEXT.into(),
+            kind: SegmentKind::Prefix,
+        }],
+    }
 }
 
 /// Word-wrap styled segments to `width` columns. Continuation lines get
@@ -159,6 +174,7 @@ struct CacheKey {
     last: Option<MsgId>,
     marker: Option<MsgId>,
     today: NaiveDate,
+    settings: DisplaySettings,
 }
 
 /// The wrapped layout of one buffer at one width.
@@ -228,6 +244,7 @@ pub struct LogView {
     pub highlighted: Option<MsgId>,
     pub width: u16,
     pub height: u16,
+    pub settings: DisplaySettings,
     cache: Option<(CacheKey, Layout)>,
 }
 
@@ -240,6 +257,7 @@ impl Default for LogView {
             highlighted: None,
             width: 80,
             height: 20,
+            settings: DisplaySettings::default(),
             cache: None,
         }
     }
@@ -283,10 +301,14 @@ impl LogView {
             last: msgs.last().map(|m| m.msg_id),
             marker: state.read_markers.get(&buffer).copied(),
             today,
+            settings: self.settings,
         };
         let stale = !matches!(&self.cache, Some((k, _)) if *k == key);
         if stale {
-            let layout = Layout::build(build_rows(state, buffer, today), usize::from(self.width));
+            let layout = Layout::build(
+                build_rows(state, buffer, today, &self.settings),
+                usize::from(self.width),
+            );
             self.cache = Some((key, layout));
         }
         &self.cache.as_ref().expect("cache filled").1
@@ -592,7 +614,7 @@ mod tests {
             ],
         );
         state.read_markers.insert(BufferId(1), MsgId(2));
-        let rows = build_rows(&state, BufferId(1), today);
+        let rows = build_rows(&state, BufferId(1), today, &DisplaySettings::default());
         let keys: Vec<_> = rows.iter().map(|r| r.key).collect();
         assert!(matches!(keys[0], RowKey::Date(_)));
         assert_eq!(keys[1], RowKey::Message(MsgId(1)));
@@ -605,9 +627,46 @@ mod tests {
     }
 
     #[test]
+    fn hidden_joins_parts_leave_the_rows_but_keep_the_marker_spot() {
+        let mut state = state_with(1..=4);
+        let list = state.messages.get_mut(&BufferId(1)).unwrap();
+        list[1].kind = MessageType::Join;
+        list[2].kind = MessageType::Quit;
+        state.read_markers.insert(BufferId(1), MsgId(2));
+        let settings = DisplaySettings {
+            hide_joins_parts: true,
+        };
+        let keys: Vec<_> = build_rows(&state, BufferId(1), Local::now().date_naive(), &settings)
+            .into_iter()
+            .map(|r| r.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                RowKey::Message(MsgId(1)),
+                RowKey::Marker,
+                RowKey::Message(MsgId(4))
+            ]
+        );
+        // Shown by default.
+        let all = build_rows(
+            &state,
+            BufferId(1),
+            Local::now().date_naive(),
+            &DisplaySettings::default(),
+        );
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
     fn todays_messages_get_no_leading_separator() {
         let state = state_with(1..=3);
-        let rows = build_rows(&state, BufferId(1), Local::now().date_naive());
+        let rows = build_rows(
+            &state,
+            BufferId(1),
+            Local::now().date_naive(),
+            &DisplaySettings::default(),
+        );
         assert!(rows.iter().all(Row::is_message));
     }
 

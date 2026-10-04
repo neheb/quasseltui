@@ -183,6 +183,11 @@ fn render_log(frame: &mut Frame<'_>, app: &mut App, theme: &Theme, area: Rect) {
     app.log.set_viewport(inner.width, inner.height);
 
     let mut log_block = block(title, focused, theme);
+    if let Some(status) = app.history_status() {
+        log_block = log_block.title(
+            Line::from(Span::styled(format!(" {status} "), theme.muted_style())).right_aligned(),
+        );
+    }
     if !app.log.follow_tail {
         log_block = log_block.title_bottom(Line::from(" ↓ more below (End/PgDn) ").right_aligned());
     }

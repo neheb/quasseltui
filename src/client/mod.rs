@@ -207,6 +207,23 @@ impl ClientHandle {
     /// `BacklogReceived` event. Callers dedupe with
     /// `ClientState::claim_backlog` and release the latch on failure.
     pub async fn request_backlog(&self, buffer_id: BufferId, limit: i32) -> Result<()> {
+        self.backlog_request(buffer_id, MsgId(-1), limit).await
+    }
+
+    /// Ask for up to `limit` messages older than `before`, to extend the
+    /// history at the top of a buffer. This is the request Quassel's own
+    /// client makes when it fetches more backlog: the core returns
+    /// messages with ids below `before`.
+    pub async fn request_backlog_before(
+        &self,
+        buffer_id: BufferId,
+        before: MsgId,
+        limit: i32,
+    ) -> Result<()> {
+        self.backlog_request(buffer_id, before, limit).await
+    }
+
+    async fn backlog_request(&self, buffer_id: BufferId, last: MsgId, limit: i32) -> Result<()> {
         let sync = SignalProxyMessage::Sync(SyncMessage {
             class_name: b"BacklogManager".to_vec(),
             object_name: String::new(),
@@ -214,7 +231,7 @@ impl ClientHandle {
             params: vec![
                 Variant::User(UserValue::BufferId(buffer_id)),
                 Variant::User(UserValue::MsgId(MsgId(-1))),
-                Variant::User(UserValue::MsgId(MsgId(-1))),
+                Variant::User(UserValue::MsgId(last)),
                 Variant::Int(limit),
                 Variant::Int(0),
             ],

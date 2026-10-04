@@ -616,3 +616,119 @@ fn hidden_joins_parts_dont_mark_activity_or_take_the_marker() {
     let effects = app.on_key(key(KeyCode::Enter));
     assert_eq!(effects, [Effect::SetMarkerLine(BufferId(10), MsgId(3))]);
 }
+
+fn older(buffer: i32, before: i64) -> Effect {
+    Effect::RequestOlderBacklog {
+        buffer: BufferId(buffer),
+        before: MsgId(before),
+    }
+}
+
+/// Simulate a backlog reply: merge messages, then tell the app.
+fn backlog_reply(app: &mut App, buffer: i32, ids: std::ops::RangeInclusive<i64>) -> Vec<Effect> {
+    let list = app.state.messages.entry(BufferId(buffer)).or_default();
+    let before = list.len();
+    for id in ids {
+        if !list.iter().any(|m| m.msg_id == MsgId(id)) {
+            list.push(message(id, buffer, MessageFlags::NONE));
+        }
+    }
+    list.sort_by_key(|m| m.msg_id);
+    let count = list.len() - before;
+    app.on_client_event(&ClientEvent::BacklogReceived {
+        buffer_id: BufferId(buffer),
+        count,
+    })
+}
+
+#[test]
+fn scrolling_past_the_top_fetches_older_history() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 100..=110);
+    app.log.set_viewport(80, 5);
+    app.set_focus(Focus::Log);
+
+    // Moving up within what's loaded fetches nothing.
+    assert!(app.on_key(key(KeyCode::Char('k'))).is_empty());
+    // Reaching the top asks for messages before the oldest one, once.
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 100)]);
+    assert!(app.on_key(key(KeyCode::Char('k'))).is_empty());
+    assert_eq!(app.history_status(), Some("loading older messages…"));
+
+    // The older page arrives; the reader is still on msg 100 and the next
+    // request goes further back.
+    backlog_reply(&mut app, 10, 90..=99);
+    assert_eq!(app.log.highlighted, Some(MsgId(100)));
+    assert_eq!(app.history_status(), None);
+    app.on_key(key(KeyCode::Char('g')));
+    assert_eq!(app.on_key(key(KeyCode::Up)), Vec::<Effect>::new());
+    // msg 90 is now first; PgUp at the top asks for the page before it.
+    let effects = app.on_key(key(KeyCode::PageUp));
+    assert!(
+        effects.is_empty() || effects == [older(10, 90)],
+        "{effects:?}"
+    );
+    app.on_key(key(KeyCode::Char('g')));
+    assert!(app.older_pending.contains(&BufferId(10)));
+
+    // An empty reply means the core has nothing older.
+    backlog_reply(&mut app, 10, 95..=95);
+    assert_eq!(app.history_status(), Some("start of history"));
+    assert!(app.on_key(key(KeyCode::Char('g'))).is_empty());
+    assert!(app.scroll_log(-3).is_empty());
+}
+
+#[test]
+fn initial_backlog_reply_isnt_mistaken_for_older_history() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    deliver(&mut app, message(50, 10, MessageFlags::NONE));
+    app.log.set_viewport(80, 5);
+    app.set_focus(Focus::Log);
+    // Fits on screen, so the view is at the top: k asks for older.
+    assert_eq!(app.on_key(key(KeyCode::Char('k'))), [older(10, 50)]);
+    // The initial backlog lands first with nothing new: still pending.
+    backlog_reply(&mut app, 10, 50..=50);
+    assert!(app.older_pending.contains(&BufferId(10)));
+    assert_ne!(app.history_status(), Some("start of history"));
+    // Then ours.
+    backlog_reply(&mut app, 10, 40..=49);
+    assert!(app.older_pending.is_empty());
+}
+
+#[test]
+fn older_history_needs_a_live_connection_and_room() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=3);
+    app.set_focus(Focus::Log);
+    app.state.max_messages_per_buffer = 3;
+    assert!(app.on_key(key(KeyCode::Char('g'))).is_empty());
+    assert_eq!(app.history_status(), Some("history limit reached"));
+
+    app.state.max_messages_per_buffer = 0;
+    app.on_client_event(&disconnected("gone"));
+    assert!(app.on_key(key(KeyCode::Char('g'))).is_empty());
+
+    let mut demo = App::new(state(), false, false);
+    demo.state
+        .messages
+        .get_mut(&BufferId(10))
+        .unwrap()
+        .push(message(1, 10, MessageFlags::NONE));
+    demo.set_focus(Focus::Log);
+    assert!(demo.on_key(key(KeyCode::Char('g'))).is_empty());
+}
+
+#[test]
+fn failed_older_request_can_be_retried() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 5..=6);
+    app.set_focus(Focus::Log);
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
+    app.older_backlog_failed(BufferId(10), "boom");
+    assert!(app.notices.last().unwrap().contains("older history"));
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
+}

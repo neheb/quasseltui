@@ -514,6 +514,12 @@ fn interruptible(
     })
 }
 
+/// Print to stderr after the UI has run. The terminal may be gone (its
+/// window was closed), and `eprintln!` would panic on the failed write.
+fn report(message: &str) {
+    let _ = writeln!(io::stderr(), "{message}");
+}
+
 /// UI preferences from the config file.
 fn display_settings(command: &str) -> Result<DisplaySettings, ExitCode> {
     match config::load(None) {
@@ -535,7 +541,7 @@ async fn run_ui_demo() -> ExitCode {
     match crate::app::run(build_demo_state(), None, display).await {
         Ok(exit) => ExitCode::from(exit.code as u8),
         Err(e) => {
-            eprintln!("ui-demo: terminal error: {e}");
+            report(&format!("ui-demo: terminal error: {e}"));
             ExitCode::from(1)
         }
     }
@@ -564,12 +570,12 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
     match crate::app::run(ClientState::default(), Some(factory), display).await {
         Ok(exit) => {
             if let Some(message) = exit.message {
-                eprintln!("{message}");
+                report(&message);
             }
             ExitCode::from(exit.code as u8)
         }
         Err(e) => {
-            eprintln!("ui: terminal error: {e}");
+            report(&format!("ui: terminal error: {e}"));
             ExitCode::from(1)
         }
     }

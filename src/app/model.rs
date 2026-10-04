@@ -19,7 +19,7 @@
 //!   lines don't.
 //! - Read markers and read state round-trip through the core.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -83,6 +83,11 @@ pub enum Effect {
         text: String,
     },
     RequestBacklog(BufferId),
+    /// Fetch history older than `before` (the oldest message we have).
+    RequestOlderBacklog {
+        buffer: BufferId,
+        before: MsgId,
+    },
     SetLastSeen(BufferId, MsgId),
     SetMarkerLine(BufferId, MsgId),
     /// Replace the client with a fresh connection over the same state.
@@ -238,6 +243,13 @@ pub struct App {
     reconnectable: bool,
     /// Input text stashed at disconnect, restored on reconnect.
     pending_input: Option<String>,
+    /// Backlog requests in flight. The core answers them in the order they
+    /// were sent, so a reply belongs to the initial request if one is
+    /// pending for that buffer, and to the older-history request otherwise.
+    initial_pending: HashSet<BufferId>,
+    pub(crate) older_pending: HashSet<BufferId>,
+    /// Buffers whose history the core has no more of.
+    history_start: HashSet<BufferId>,
     // Bridge state for the current connection attempt.
     ever_active: bool,
     session_opened: bool,
@@ -263,6 +275,9 @@ impl App {
             live,
             reconnectable,
             pending_input: None,
+            initial_pending: HashSet::new(),
+            older_pending: HashSet::new(),
+            history_start: HashSet::new(),
             ever_active: false,
             session_opened: false,
             presession_fatal: true,
@@ -331,6 +346,9 @@ impl App {
             }
             ClientEvent::BufferRemoved { buffer_id } => {
                 self.buffer_activity.remove(buffer_id);
+                self.initial_pending.remove(buffer_id);
+                self.older_pending.remove(buffer_id);
+                self.history_start.remove(buffer_id);
                 if self.active_buffer_id == Some(*buffer_id) {
                     let replacement = pick_default_buffer(&self.state);
                     self.active_buffer_id = replacement;
@@ -341,6 +359,7 @@ impl App {
             }
             ClientEvent::MessageReceived(message) => self.handle_message(message),
             ClientEvent::BacklogReceived { buffer_id, count } => {
+                self.older_backlog_arrived(*buffer_id, *count);
                 if Some(*buffer_id) == self.active_buffer_id && *count > 0 {
                     self.active_updated(Some(*buffer_id))
                 } else {
@@ -423,6 +442,7 @@ impl App {
             // No history requests once the socket is gone: they'd fail and
             // spam notices on every post-drop buffer switch.
             if self.live && !self.connection_lost && self.state.claim_backlog(id) {
+                self.initial_pending.insert(id);
                 effects.push(Effect::RequestBacklog(id));
             }
         }
@@ -509,6 +529,9 @@ impl App {
             return Vec::new();
         }
         self.connection_lost = false;
+        // Requests on the old connection will never be answered.
+        self.initial_pending.clear();
+        self.older_pending.clear();
         self.input.disabled = false;
         self.input.placeholder = DEFAULT_PLACEHOLDER.into();
         if let Some(text) = self.pending_input.take()
@@ -589,9 +612,81 @@ impl App {
         }
     }
 
+    /// Route a backlog reply to the request it answers (see
+    /// `initial_pending`). An older-history reply with nothing new means the
+    /// core has no more.
+    fn older_backlog_arrived(&mut self, buffer: BufferId, count: usize) {
+        if self.initial_pending.remove(&buffer) {
+            return;
+        }
+        if self.older_pending.remove(&buffer) && count == 0 {
+            self.history_start.insert(buffer);
+        }
+    }
+
+    /// After a move upward: at the top of what we have, fetch the next page
+    /// of older history from the core.
+    fn fetch_older_if_at_top(&mut self) -> Vec<Effect> {
+        let Some(buffer) = self.log.buffer else {
+            return Vec::new();
+        };
+        if !self.live
+            || self.connection_lost
+            || self.older_pending.contains(&buffer)
+            || self.history_start.contains(&buffer)
+            || self.log.top_line(&self.state) != 0
+        {
+            return Vec::new();
+        }
+        let messages = self.state.messages_for_buffer(buffer);
+        // An empty buffer is the initial backlog request's job.
+        let Some(oldest) = messages.first().map(|m| m.msg_id) else {
+            return Vec::new();
+        };
+        // At the retention cap, older messages would be trimmed right away.
+        let cap = self.state.max_messages_per_buffer;
+        if cap > 0 && messages.len() >= cap {
+            return Vec::new();
+        }
+        self.older_pending.insert(buffer);
+        vec![Effect::RequestOlderBacklog {
+            buffer,
+            before: oldest,
+        }]
+    }
+
+    pub fn older_backlog_failed(&mut self, buffer: BufferId, error: &str) {
+        tracing::warn!("older backlog request failed for buffer {buffer}: {error}");
+        self.older_pending.remove(&buffer);
+        self.notify(
+            &format!("Could not load older history: {error}"),
+            Severity::Warning,
+        );
+    }
+
+    /// What the top of the active buffer's history looks like, for the view.
+    pub fn history_status(&mut self) -> Option<&'static str> {
+        let buffer = self.log.buffer?;
+        if self.older_pending.contains(&buffer) {
+            return Some("loading older messages…");
+        }
+        if self.log.top_line(&self.state) != 0 {
+            return None;
+        }
+        let cap = self.state.max_messages_per_buffer;
+        if self.history_start.contains(&buffer) {
+            Some("start of history")
+        } else if cap > 0 && self.state.messages_for_buffer(buffer).len() >= cap {
+            Some("history limit reached")
+        } else {
+            None
+        }
+    }
+
     pub fn backlog_failed(&mut self, buffer: BufferId, error: &str) {
         tracing::warn!("backlog request failed for buffer {buffer}: {error}");
         self.state.release_backlog(buffer);
+        self.initial_pending.remove(&buffer);
         self.notify(
             &format!("Could not load history: {error}"),
             Severity::Warning,
@@ -652,8 +747,13 @@ impl App {
         self.log.click(&self.state, line);
     }
 
-    pub fn scroll_log(&mut self, lines: isize) {
+    pub fn scroll_log(&mut self, lines: isize) -> Vec<Effect> {
         self.log.scroll_lines(&self.state, lines);
+        if lines < 0 {
+            self.fetch_older_if_at_top()
+        } else {
+            Vec::new()
+        }
     }
 
     // -- keys -------------------------------------------------------------------
@@ -717,7 +817,7 @@ impl App {
             }
             KeyCode::PageUp => {
                 self.log.page(&self.state, -1);
-                return Vec::new();
+                return self.fetch_older_if_at_top();
             }
             KeyCode::PageDown => {
                 self.log.page(&self.state, 1);
@@ -796,6 +896,12 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let half_page = (self.log.height as isize / 2).max(1);
+        let upward = !shift
+            && match key.code {
+                KeyCode::Char('u' | 'y') => ctrl,
+                KeyCode::Up | KeyCode::Char('k' | 'g') | KeyCode::Home => !ctrl,
+                _ => false,
+            };
         match key.code {
             KeyCode::Char('d') if ctrl => self.log.scroll_lines(&self.state, half_page),
             KeyCode::Char('u') if ctrl => self.log.scroll_lines(&self.state, -half_page),
@@ -818,6 +924,9 @@ impl App {
                 }
             }
             _ => {}
+        }
+        if upward {
+            return self.fetch_older_if_at_top();
         }
         Vec::new()
     }

@@ -264,6 +264,10 @@ async fn requests_are_written_with_the_right_shapes() {
         .await
         .unwrap();
     handle.request_backlog(BufferId(10), 100).await.unwrap();
+    handle
+        .request_backlog_before(BufferId(10), MsgId(500), 100)
+        .await
+        .unwrap();
     handle.set_last_seen(BufferId(10), MsgId(42)).await.unwrap();
     handle
         .set_marker_line(BufferId(10), MsgId(41))
@@ -298,7 +302,18 @@ async fn requests_are_written_with_the_right_shapes() {
             Variant::Int(0),
         ]
     );
-    let slots: Vec<_> = sent[3..]
+    let SignalProxyMessage::Sync(older) = &sent[3] else {
+        panic!("expected Sync, got {:?}", sent[3]);
+    };
+    assert_eq!(older.slot_name, b"requestBacklog");
+    assert_eq!(
+        older.params[1..3],
+        [
+            Variant::User(UserValue::MsgId(MsgId(-1))),
+            Variant::User(UserValue::MsgId(MsgId(500)))
+        ]
+    );
+    let slots: Vec<_> = sent[4..]
         .iter()
         .map(|m| match m {
             SignalProxyMessage::Sync(s) => (s.slot_name.clone(), s.params.clone()),

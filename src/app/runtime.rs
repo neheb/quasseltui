@@ -10,11 +10,13 @@
 use std::io;
 use std::time::{Duration, Instant};
 
+use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
     EventStream, KeyEventKind, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use futures::{FutureExt, StreamExt};
 use ratatui::layout::{Margin, Position};
 use tokio::sync::mpsc;
@@ -31,17 +33,64 @@ use crate::protocol::types::BufferId;
 pub type ClientFactory = Box<dyn Fn() -> QuasselClient + Send>;
 
 /// Failures of spawned requests, reported back to the app.
-enum Outcome {
-    SendFailed { text: String, error: String },
-    BacklogFailed { buffer: BufferId, error: String },
+enum Failure {
+    Send { text: String, error: String },
+    Backlog { buffer: BufferId, error: String },
+    OlderBacklog { buffer: BufferId, error: String },
 }
 
 enum Input {
     Terminal(Option<io::Result<Event>>),
     Protocol(Option<ProtocolEvent>),
-    Outcome(Outcome),
+    Outcome(Failure),
     Tick,
-    Signal,
+    Signal(i32),
+}
+
+/// Enter raw mode and the alternate screen, and make panics restore the
+/// terminal first.
+///
+/// This replaces `ratatui::init`, whose restore reports failure with
+/// `eprintln!`. When the terminal window has been closed, stderr is gone,
+/// so that `eprintln!` panics, ratatui's panic hook restores (and prints)
+/// again, and the second panic aborts the process.
+fn init_terminal() -> io::Result<ratatui::DefaultTerminal> {
+    terminal::enable_raw_mode()?;
+    let setup = execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    );
+    if let Err(e) = setup {
+        restore_terminal();
+        return Err(e);
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        previous(info);
+    }));
+    match ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout())) {
+        Ok(t) => Ok(t),
+        Err(e) => {
+            restore_terminal();
+            Err(e)
+        }
+    }
+}
+
+/// Undo [`init_terminal`]. Best effort and silent: the terminal may already
+/// be gone, and there is nowhere to report that.
+fn restore_terminal() {
+    let _ = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        Show
+    );
+    let _ = terminal::disable_raw_mode();
 }
 
 /// How many already-queued client events to apply before redrawing.
@@ -56,23 +105,18 @@ pub async fn run(
 ) -> io::Result<Exit> {
     // Set up the terminal before connecting: without one there is no point
     // opening a session.
-    let mut terminal = ratatui::try_init().map_err(|e| {
+    let mut terminal = init_terminal().map_err(|e| {
         io::Error::new(
             e.kind(),
             format!("cannot start the terminal UI ({e}); run it from an interactive terminal"),
         )
     })?;
-    if let Err(e) = execute!(io::stdout(), EnableMouseCapture, EnableBracketedPaste) {
-        ratatui::restore();
-        return Err(e);
-    }
 
     let mut client = factory.as_ref().map(|make| make());
     let mut app = App::new(state, client.is_some(), factory.is_some());
     app.set_display(display);
     let result = event_loop(&mut terminal, &mut app, &mut client, factory.as_ref()).await;
-    let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
-    ratatui::restore();
+    restore_terminal();
 
     // Close after the terminal is back, so a slow TLS goodbye can't leave
     // the user staring at a frozen screen.
@@ -122,7 +166,7 @@ async fn event_loop(
             } => Input::Protocol(event),
             Some(outcome) = outcome_rx.recv() => Input::Outcome(outcome),
             _ = tick.tick() => Input::Tick,
-            _ = terminate.recv() => Input::Signal,
+            Some(code) = terminate.recv() => Input::Signal(code),
         };
 
         let mut effects = Vec::new();
@@ -155,12 +199,16 @@ async fn event_loop(
                 }
                 dirty = true;
             }
-            Input::Outcome(Outcome::SendFailed { text, error }) => {
+            Input::Outcome(Failure::Send { text, error }) => {
                 app.send_failed(text, &error);
                 dirty = true;
             }
-            Input::Outcome(Outcome::BacklogFailed { buffer, error }) => {
+            Input::Outcome(Failure::Backlog { buffer, error }) => {
                 app.backlog_failed(buffer, &error);
+                dirty = true;
+            }
+            Input::Outcome(Failure::OlderBacklog { buffer, error }) => {
+                app.older_backlog_failed(buffer, &error);
                 dirty = true;
             }
             Input::Tick => {
@@ -173,9 +221,9 @@ async fn event_loop(
                     dirty = true;
                 }
             }
-            Input::Signal => {
+            Input::Signal(code) => {
                 return Ok(Exit {
-                    code: 0,
+                    code,
                     message: None,
                 });
             }
@@ -223,14 +271,8 @@ fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effe
                     }
                     Vec::new()
                 }
-                MouseEventKind::ScrollUp => {
-                    app.scroll_log(-3);
-                    Vec::new()
-                }
-                MouseEventKind::ScrollDown => {
-                    app.scroll_log(3);
-                    Vec::new()
-                }
+                MouseEventKind::ScrollUp => app.scroll_log(-3),
+                MouseEventKind::ScrollDown => app.scroll_log(3),
                 _ => Vec::new(),
             }
         }
@@ -239,21 +281,32 @@ fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effe
 }
 
 /// Run one request as its own task; failures come back as outcomes.
-fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::UnboundedSender<Outcome>) {
+fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::UnboundedSender<Failure>) {
     let handle = client.handle();
     tokio::spawn(async move {
         match effect {
             Effect::SendInput { buffer, text } => {
                 if let Err(e) = handle.send_input(buffer, text.clone()).await {
-                    let _ = outcomes.send(Outcome::SendFailed {
+                    let _ = outcomes.send(Failure::Send {
                         text,
+                        error: e.to_string(),
+                    });
+                }
+            }
+            Effect::RequestOlderBacklog { buffer, before } => {
+                if let Err(e) = handle
+                    .request_backlog_before(buffer, before, DEFAULT_BACKLOG_LIMIT)
+                    .await
+                {
+                    let _ = outcomes.send(Failure::OlderBacklog {
+                        buffer,
                         error: e.to_string(),
                     });
                 }
             }
             Effect::RequestBacklog(buffer) => {
                 if let Err(e) = handle.request_backlog(buffer, DEFAULT_BACKLOG_LIMIT).await {
-                    let _ = outcomes.send(Outcome::BacklogFailed {
+                    let _ = outcomes.send(Failure::Backlog {
                         buffer,
                         error: e.to_string(),
                     });
@@ -278,15 +331,16 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
 
 /// SIGTERM and SIGHUP end the UI cleanly (restoring the terminal) instead
 /// of killing the process in raw mode.
-fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<()>> {
+/// Yields the exit code to use (128 + signal number).
+fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<i32>> {
     use tokio::signal::unix::{SignalKind, signal};
     let (tx, rx) = mpsc::unbounded_channel();
-    for kind in [SignalKind::terminate(), SignalKind::hangup()] {
+    for (kind, code) in [(SignalKind::terminate(), 143), (SignalKind::hangup(), 129)] {
         let mut stream = signal(kind)?;
         let tx = tx.clone();
         tokio::spawn(async move {
             if stream.recv().await.is_some() {
-                let _ = tx.send(());
+                let _ = tx.send(code);
             }
         });
     }

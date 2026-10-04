@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page, `g`/`G` jump to the ends, and `i` returns to typing. The input bar
   shows `NORMAL` in that mode. The sidebar is no longer a separate focus
   stop with its own cursor.
+- Older history on demand: moving or scrolling up past the oldest loaded
+  message fetches the previous 100 messages from the core, all the way back
+  to the start of the buffer.
 - `hide_joins_parts = true` in the `[quasseltui]` config section hides
   joins, parts, quits, and netsplits from the scrollback, and they no longer
   mark a buffer unread.
@@ -41,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/live_core.rs`, an opt-in end-to-end test against a real core.
 
 ### Fixed
+
+- Closing the terminal window (e.g. Super+W on Hyprland) no longer crashes
+  with SIGABRT. Restoring the dead terminal failed, the error was printed to
+  the closed stderr, and that panicked twice. Terminal restore is now
+  silent, and the process exits with 129 on SIGHUP (143 on SIGTERM).
 
 - Server lines without a sender (such as topic announcements) no longer
   show a dangling `: `.

@@ -101,6 +101,13 @@ bar shows `NORMAL` while you're in it.
 | Click a channel | Switch to it |
 | `F1` (or `?` in normal mode) | Show all keys |
 
+Scrolling or moving up past the oldest loaded message fetches the next 100
+older messages from the core, so the whole history is reachable. The
+scrollback's top border says `loading older messages…` while that's in
+flight and `start of history` once there's nothing older. Each buffer keeps up
+to 5000 messages in memory; past that, the border says `history limit
+reached`.
+
 Buffers with unseen activity are bold in the sidebar; highlights and
 private messages are bold yellow. Read state and markers sync through
 the core, so reading here marks things read in your other Quassel

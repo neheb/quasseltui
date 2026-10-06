@@ -269,7 +269,7 @@ fn render_input(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     if app.focus == Focus::Log && !app.input.disabled {
         input_block = input_block.title_bottom(
             Line::from(Span::styled(
-                " NORMAL · j/k move · J/K channels · i to type ",
+                " NORMAL · j/k channels · ↑/↓ move · i to type ",
                 theme.accent_style(),
             ))
             .right_aligned(),
@@ -374,11 +374,8 @@ const HELP: &[(&str, &str)] = &[
         "Enter (empty input)",
         "Move the read marker to the newest message",
     ),
-    (
-        "j / k, Down / Up",
-        "Normal: move through the current channel",
-    ),
-    ("J / K, Shift+Down/Up", "Normal: next / previous channel"),
+    ("Down / Up", "Normal: move through the current channel"),
+    ("j / k, Shift+Down/Up", "Normal: next / previous channel"),
     (
         "Ctrl+D / Ctrl+U",
         "Normal: half a page (Ctrl+E / Ctrl+Y: a line)",

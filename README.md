@@ -99,8 +99,8 @@ while you're in it.
 | `PgUp` / `PgDn`, mouse wheel | Scroll, in either mode |
 | `Up` / `Down` (typing) | Recall previously sent lines |
 | `Enter` (empty input bar) | Move the read marker to the newest message |
-| `j` / `k` or `Down` / `Up` (normal) | Move through the current channel |
-| `J` / `K` or `Shift+Down` / `Shift+Up` (normal) | Next / previous channel |
+| `Down` / `Up` (normal) | Move through the current channel |
+| `j` / `k` or `Shift+Down` / `Shift+Up` (normal) | Next / previous channel |
 | `Ctrl+D` / `Ctrl+U` (normal) | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
 | `g` / `G` (normal) | First / last message |
 | `Enter` (normal) | Place the read marker on the selected message |

@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0.13+), and clears the mark when another client reads them. Only chat
   lines (messages, notices, actions) count; joins, parts, quits and other
   events no longer mark a channel.
+- **`j`/`k` switch channels** in normal mode; `J`/`K` are gone. `Down`/`Up`
+  still move through the current channel.
 - **Start in normal mode**, like vim: single keys navigate right away and
   `i` starts typing. A reconnect returns to normal mode unless it restores
   a half-typed draft.

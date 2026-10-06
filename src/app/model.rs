@@ -1107,8 +1107,8 @@ impl App {
         Vec::new()
     }
 
-    /// Normal-mode keys, aerc-style: lowercase navigates within the
-    /// current channel, uppercase through the channel list.
+    /// Normal-mode keys: j/k walk the channel list, the arrows move
+    /// within the current channel.
     fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -1116,7 +1116,7 @@ impl App {
         let upward = !shift
             && match key.code {
                 KeyCode::Char('u' | 'y') => ctrl,
-                KeyCode::Up | KeyCode::Char('k' | 'g') | KeyCode::Home => !ctrl,
+                KeyCode::Up | KeyCode::Char('g') | KeyCode::Home => !ctrl,
                 _ => false,
             };
         match key.code {
@@ -1125,12 +1125,12 @@ impl App {
             KeyCode::Char('e') if ctrl => self.log.scroll_lines(&self.state, 1),
             KeyCode::Char('y') if ctrl => self.log.scroll_lines(&self.state, -1),
             _ if ctrl => {}
-            KeyCode::Char('K') => return self.cycle_buffer(-1),
-            KeyCode::Char('J') => return self.cycle_buffer(1),
+            KeyCode::Char('k') => return self.cycle_buffer(-1),
+            KeyCode::Char('j') => return self.cycle_buffer(1),
             KeyCode::Up if shift => return self.cycle_buffer(-1),
             KeyCode::Down if shift => return self.cycle_buffer(1),
-            KeyCode::Up | KeyCode::Char('k') => self.log.move_highlight(&self.state, -1),
-            KeyCode::Down | KeyCode::Char('j') => self.log.move_highlight(&self.state, 1),
+            KeyCode::Up => self.log.move_highlight(&self.state, -1),
+            KeyCode::Down => self.log.move_highlight(&self.state, 1),
             KeyCode::Home | KeyCode::Char('g') => self.log.highlight_first(&self.state),
             KeyCode::End | KeyCode::Char('G') => self.log.highlight_last(&self.state),
             KeyCode::Char('?') => self.show_help = true,

@@ -611,16 +611,16 @@ fn aerc_style_normal_mode() {
     }
     app.log.set_viewport(80, 10);
 
-    // Esc leaves typing; j/k and the arrows move within the channel
-    // without typing anything.
+    // Esc leaves typing; the arrows move within the channel without
+    // typing anything.
     typing(&mut app);
     type_text(&mut app, "draft");
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Log);
     assert_eq!(app.log.highlighted, Some(MsgId(40)));
-    app.on_key(key(KeyCode::Char('k')));
     app.on_key(key(KeyCode::Up));
-    app.on_key(key(KeyCode::Char('j')));
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Down));
     assert_eq!(app.log.highlighted, Some(MsgId(39)));
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.log.highlighted, Some(MsgId(40)));
@@ -637,12 +637,12 @@ fn aerc_style_normal_mode() {
     assert!(app.log.follow_tail);
     assert_eq!(app.input.value, "draft");
 
-    // J/K and Shift+arrows switch channels immediately.
-    app.on_key(shift('J'));
+    // j/k and Shift+arrows switch channels immediately.
+    app.on_key(key(KeyCode::Char('j')));
     assert_eq!(app.active_buffer_id, Some(BufferId(11)));
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
-    app.on_key(shift('K'));
+    app.on_key(key(KeyCode::Char('k')));
     app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
     assert_eq!(app.active_buffer_id, Some(BufferId(10)));
 
@@ -847,10 +847,10 @@ fn scrolling_past_the_top_fetches_older_history() {
     app.set_focus(Focus::Log);
 
     // Moving up within what's loaded fetches nothing.
-    assert!(app.on_key(key(KeyCode::Char('k'))).is_empty());
+    assert!(app.on_key(key(KeyCode::Up)).is_empty());
     // Reaching the top asks for messages before the oldest one, once.
     assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 100)]);
-    assert!(app.on_key(key(KeyCode::Char('k'))).is_empty());
+    assert!(app.on_key(key(KeyCode::Up)).is_empty());
     assert_eq!(app.history_status(), Some("loading older messages…"));
 
     // The older page arrives; the reader is still on msg 100 and the next
@@ -883,8 +883,8 @@ fn initial_backlog_reply_isnt_mistaken_for_older_history() {
     deliver(&mut app, message(50, 10, MessageFlags::NONE));
     app.log.set_viewport(80, 5);
     app.set_focus(Focus::Log);
-    // Fits on screen, so the view is at the top: k asks for older.
-    assert_eq!(app.on_key(key(KeyCode::Char('k'))), [older(10, 50)]);
+    // Fits on screen, so the view is at the top: Up asks for older.
+    assert_eq!(app.on_key(key(KeyCode::Up)), [older(10, 50)]);
     // The initial backlog lands first with nothing new: still pending.
     backlog_reply(&mut app, 10, 50..=50);
     assert!(app.older_pending.contains_key(&BufferId(10)));
@@ -948,7 +948,7 @@ fn starts_in_normal_mode() {
     assert_eq!(app.focus, Focus::Log);
     // Keys navigate rather than type.
     deliver(&mut app, message(1, 10, MessageFlags::NONE));
-    app.on_key(key(KeyCode::Char('J')));
+    app.on_key(key(KeyCode::Char('j')));
     assert_eq!(app.active_buffer_id, Some(BufferId(11)));
     assert!(app.input.value.is_empty());
     // Without a draft, a reconnect stays in normal mode.

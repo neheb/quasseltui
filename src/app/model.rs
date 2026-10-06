@@ -27,7 +27,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::format::{
     CHAT_TYPES, DisplaySettings, format_message_plain, is_chat, ordered_buffer_ids,
-    pick_default_buffer,
+    pick_default_buffer, short_sender,
 };
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, IrcMessage};
@@ -254,6 +254,21 @@ impl InputBar {
     }
 }
 
+/// An in-progress Tab completion: repeated Tabs cycle through `candidates`,
+/// replacing what the previous Tab inserted.
+#[derive(Debug, Clone)]
+struct Completion {
+    /// Char index where the completed word starts.
+    start: usize,
+    /// Chars the current candidate (and its suffix) occupies.
+    inserted: usize,
+    candidates: Vec<String>,
+    index: usize,
+}
+
+/// How far back in a buffer to look for recent speakers.
+const COMPLETION_SCAN: usize = 1000;
+
 pub struct App {
     pub state: ClientState,
     pub active_buffer_id: Option<BufferId>,
@@ -287,6 +302,7 @@ pub struct App {
     last_click: Option<(TreeRow, Instant)>,
     /// The first `y` of a `yy` was pressed in normal mode.
     pending_yank: bool,
+    completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     ever_active: bool,
     session_opened: bool,
@@ -318,6 +334,7 @@ impl App {
             history_start: HashSet::new(),
             last_click: None,
             pending_yank: false,
+            completion: None,
             ever_active: false,
             session_opened: false,
             presession_fatal: true,
@@ -574,6 +591,7 @@ impl App {
         if Some(buffer) == self.active_buffer_id {
             return Vec::new();
         }
+        self.completion = None;
         let previous = self.active_buffer_id.replace(buffer);
         let mut effects = self.active_updated(Some(buffer));
         if let Some(prev) = previous
@@ -890,6 +908,120 @@ impl App {
         vec![Effect::Copy(text)]
     }
 
+    // -- nick completion --------------------------------------------------------
+
+    /// Whether Tab completes a nick (typing) rather than switching modes.
+    pub fn completes_on_tab(&self) -> bool {
+        self.focus == Focus::Input && !self.input.disabled && !self.show_help
+    }
+
+    /// Tab (Shift+Tab: `backward`) while typing: complete the word before
+    /// the cursor to a nick, or cycle to the next match. `members` is the
+    /// active channel's member list, if known. Recent speakers come first;
+    /// a nick at the start of the line gets `": "`, elsewhere a space.
+    pub fn complete_nick<'a>(
+        &mut self,
+        members: impl IntoIterator<Item = &'a str>,
+        backward: bool,
+    ) {
+        if let Some(mut c) = self.completion.take() {
+            let n = c.candidates.len();
+            c.index = if backward {
+                (c.index + n - 1) % n
+            } else {
+                (c.index + 1) % n
+            };
+            self.input.delete_range(c.start, c.start + c.inserted);
+            c.inserted = self.insert_completion(&c.candidates[c.index], c.start);
+            self.completion = Some(c);
+            return;
+        }
+        let chars: Vec<char> = self.input.value.chars().collect();
+        let end = self.input.cursor;
+        let start = chars[..end]
+            .iter()
+            .rposition(|c| c.is_whitespace())
+            .map_or(0, |i| i + 1);
+        let prefix: String = chars[start..end].iter().collect::<String>().to_lowercase();
+        if prefix.is_empty() {
+            return;
+        }
+        let candidates: Vec<String> = self
+            .nick_candidates(members)
+            .into_iter()
+            .filter(|nick| nick.to_lowercase().starts_with(&prefix))
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        let index = if backward { candidates.len() - 1 } else { 0 };
+        self.input.delete_range(start, end);
+        let inserted = self.insert_completion(&candidates[index], start);
+        self.completion = Some(Completion {
+            start,
+            inserted,
+            candidates,
+            index,
+        });
+    }
+
+    fn insert_completion(&mut self, nick: &str, start: usize) -> usize {
+        let text = if start == 0 {
+            format!("{nick}: ")
+        } else {
+            format!("{nick} ")
+        };
+        self.input.insert(&text);
+        text.chars().count()
+    }
+
+    /// Nicks to complete in the active buffer: recent speakers (newest
+    /// first), then the remaining members alphabetically. Speakers who
+    /// left are dropped when the member list is known. Never our own nick.
+    fn nick_candidates<'a>(&self, members: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        let Some(buffer) = self.active_buffer_id else {
+            return Vec::new();
+        };
+        let mut members: Vec<&str> = members.into_iter().collect();
+        if let Some(info) = self.state.buffers.get(&buffer)
+            && info.kind == BufferType::Query
+        {
+            members.push(&info.name);
+        }
+        let me = self
+            .state
+            .network_for_buffer(buffer)
+            .map(|n| n.my_nick.to_lowercase())
+            .unwrap_or_default();
+        let mut seen = HashSet::from([me]);
+        let mut out = Vec::new();
+        let member_keys: HashSet<String> = members.iter().map(|m| m.to_lowercase()).collect();
+        let speakers = self
+            .state
+            .messages_for_buffer(buffer)
+            .iter()
+            .rev()
+            .take(COMPLETION_SCAN)
+            .filter(|m| is_chat(m.kind))
+            .map(|m| short_sender(&m.sender));
+        for nick in speakers {
+            let key = nick.to_lowercase();
+            if nick.is_empty() || (!member_keys.is_empty() && !member_keys.contains(&key)) {
+                continue;
+            }
+            if seen.insert(key) {
+                out.push(nick.to_string());
+            }
+        }
+        members.sort_by_key(|m| m.to_lowercase());
+        for nick in members {
+            if seen.insert(nick.to_lowercase()) {
+                out.push(nick.to_string());
+            }
+        }
+        out
+    }
+
     // -- mouse ------------------------------------------------------------------
 
     /// A click on a sidebar row. A click on a buffer selects it; a
@@ -1003,6 +1135,7 @@ impl App {
     // -- keys -------------------------------------------------------------------
 
     pub fn on_paste(&mut self, text: &str) {
+        self.completion = None;
         if self.focus == Focus::Input && !self.input.disabled {
             let flat: String = text
                 .chars()
@@ -1015,6 +1148,12 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.completes_on_tab() {
+            self.complete_nick([], key.code == KeyCode::BackTab);
+            return Vec::new();
+        }
+        // Any other key ends a Tab completion.
+        self.completion = None;
 
         if self.show_help {
             if matches!(
@@ -1056,7 +1195,7 @@ impl App {
                 return Vec::new();
             }
             KeyCode::Tab | KeyCode::BackTab => {
-                self.toggle_focus();
+                self.set_focus(Focus::Input);
                 return Vec::new();
             }
             KeyCode::PageUp => {
@@ -1074,15 +1213,6 @@ impl App {
             Focus::Input => self.input_key(key, ctrl),
             Focus::Log => self.normal_key(key),
         }
-    }
-
-    /// Tab: switch between typing and normal mode.
-    fn toggle_focus(&mut self) {
-        let next = match self.focus {
-            Focus::Input => Focus::Log,
-            Focus::Log => Focus::Input,
-        };
-        self.set_focus(next);
     }
 
     pub fn set_focus(&mut self, focus: Focus) {

@@ -87,14 +87,15 @@ see them again.
 
 quasseltui has two modes, like aerc or vim. You start out in **normal**
 mode, where single keys navigate; `i` (or `Esc` / `Tab`) switches to
-**typing**, and `Esc` / `Tab` switches back. The input bar shows `NORMAL`
+**typing**, and `Esc` switches back. The input bar shows `NORMAL`
 while you're in it.
 
 | Key | Action |
 | --- | --- |
 | `Ctrl+Q` | Quit |
 | `Ctrl+R` | Reconnect after a disconnect (history is kept; the gap is re-fetched) |
-| `Esc` / `Tab` | Switch between typing and normal mode |
+| `Esc` | Switch between typing and normal mode (`Tab` also starts typing) |
+| `Tab` / `Shift+Tab` (typing) | Complete a nick; press again to cycle |
 | `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next channel, in either mode |
 | `PgUp` / `PgDn`, mouse wheel | Scroll, in either mode |
 | `Up` / `Down` (typing) | Recall previously sent lines |

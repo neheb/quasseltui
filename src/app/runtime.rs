@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyEventKind, MouseButton, MouseEventKind,
+    EventStream, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -182,7 +182,7 @@ async fn event_loop(
             }
             Input::Terminal(Some(Err(e))) => return Err(e),
             Input::Terminal(Some(Ok(event))) => {
-                effects.extend(handle_terminal_event(app, &areas, event));
+                effects.extend(handle_terminal_event(app, &areas, client.as_ref(), event));
                 dirty = true;
             }
             Input::Protocol(None) => client_done = true,
@@ -253,8 +253,41 @@ async fn event_loop(
     }
 }
 
-fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effect> {
+/// The active channel's members, as far as the client knows them.
+fn channel_members(client: &QuasselClient, app: &App) -> Vec<String> {
+    let Some(info) = app
+        .active_buffer_id
+        .and_then(|id| app.state.buffers.get(&id))
+    else {
+        return Vec::new();
+    };
+    client
+        .dispatcher()
+        .channels()
+        .find(|c| c.network_id == info.network_id.0 && c.name.eq_ignore_ascii_case(&info.name))
+        .map(|c| c.members().cloned().collect())
+        .unwrap_or_default()
+}
+
+fn handle_terminal_event(
+    app: &mut App,
+    areas: &Areas,
+    client: Option<&QuasselClient>,
+    event: Event,
+) -> Vec<Effect> {
     match event {
+        Event::Key(key)
+            if key.kind != KeyEventKind::Release
+                && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                && app.completes_on_tab() =>
+        {
+            let members = client.map(|c| channel_members(c, app)).unwrap_or_default();
+            app.complete_nick(
+                members.iter().map(String::as_str),
+                key.code == KeyCode::BackTab,
+            );
+            Vec::new()
+        }
         Event::Key(key) if key.kind != KeyEventKind::Release => app.on_key(key),
         Event::Paste(text) => {
             app.on_paste(&text);

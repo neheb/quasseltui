@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal's clipboard support (OSC 52), so it also works over SSH. In
   tmux it needs `set-clipboard on`. To select text with the mouse instead,
   hold `Shift` while dragging.
+- **Tab completes nicks** while typing: recent speakers first, then the
+  rest of the channel; Tab again cycles, Shift+Tab goes back. A nick at
+  the start of the line gets `: `. `Esc` (not `Tab`) leaves typing.
 
 ### Fixed
 

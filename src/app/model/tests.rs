@@ -817,6 +817,7 @@ fn older(buffer: i32, before: i64) -> Effect {
     Effect::RequestOlderBacklog {
         buffer: BufferId(buffer),
         before: MsgId(before),
+        limit: DEFAULT_BACKLOG_LIMIT,
     }
 }
 
@@ -866,7 +867,7 @@ fn scrolling_past_the_top_fetches_older_history() {
         "{effects:?}"
     );
     app.on_key(key(KeyCode::Char('g')));
-    assert!(app.older_pending.contains(&BufferId(10)));
+    assert!(app.older_pending.contains_key(&BufferId(10)));
 
     // An empty reply means the core has nothing older.
     backlog_reply(&mut app, 10, 95..=95);
@@ -886,7 +887,7 @@ fn initial_backlog_reply_isnt_mistaken_for_older_history() {
     assert_eq!(app.on_key(key(KeyCode::Char('k'))), [older(10, 50)]);
     // The initial backlog lands first with nothing new: still pending.
     backlog_reply(&mut app, 10, 50..=50);
-    assert!(app.older_pending.contains(&BufferId(10)));
+    assert!(app.older_pending.contains_key(&BufferId(10)));
     assert_ne!(app.history_status(), Some("start of history"));
     // Then ours.
     backlog_reply(&mut app, 10, 40..=49);
@@ -899,6 +900,17 @@ fn older_history_needs_a_live_connection_and_room() {
     app.on_client_event(&opened());
     backlog_reply(&mut app, 10, 1..=3);
     app.set_focus(Focus::Log);
+    // Only as much as fits under the cap is requested.
+    app.state.max_messages_per_buffer = 5;
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('g'))),
+        [Effect::RequestOlderBacklog {
+            buffer: BufferId(10),
+            before: MsgId(1),
+            limit: 2,
+        }]
+    );
+    app.older_backlog_failed(BufferId(10), "x");
     app.state.max_messages_per_buffer = 3;
     assert!(app.on_key(key(KeyCode::Char('g'))).is_empty());
     assert_eq!(app.history_status(), Some("history limit reached"));
@@ -954,4 +966,22 @@ fn notices_are_capped() {
     assert_eq!(app.notices.len(), MAX_NOTICES);
     assert_eq!(app.notices[0], "n5");
     assert_eq!(app.toasts.len(), 4);
+}
+
+#[test]
+fn unanswered_history_requests_expire() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 5..=6);
+    app.set_focus(Focus::Log);
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
+    // Not yet.
+    assert!(!app.tick(Instant::now() + Duration::from_secs(1)));
+    assert_eq!(app.history_status(), Some("loading older messages…"));
+    // The reply never comes: give up, say so, and allow a retry.
+    assert!(app.tick(Instant::now() + Duration::from_secs(61)));
+    assert!(app.older_pending.is_empty());
+    assert_ne!(app.history_status(), Some("loading older messages…"));
+    assert!(app.notices.last().unwrap().contains("history request"));
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
 }

@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 
 use crate::app::format::DisplaySettings;
 use crate::app::model::{App, Effect, Exit};
-use crate::app::theme::ThemeWatcher;
+use crate::app::theme::{Theme, ThemeWatcher};
 use crate::app::view::{self, Areas};
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, QuasselClient};
 use crate::protocol::connection::ProtocolEvent;
@@ -44,6 +44,7 @@ enum Input {
     Terminal(Option<io::Result<Event>>),
     Protocol(Option<ProtocolEvent>),
     Outcome(Failure),
+    Theme(Theme),
     Tick,
     Signal(i32),
 }
@@ -141,8 +142,8 @@ async fn event_loop(
     let (outcome_tx, mut outcome_rx) = mpsc::unbounded_channel();
     let mut watcher = ThemeWatcher::new();
     let mut theme = watcher.load();
+    let mut theme_rx = watch_theme(watcher);
     let mut tick = tokio::time::interval(Duration::from_millis(250));
-    let mut ticks: u32 = 0;
     let mut client_done = client.is_none();
     let mut areas = Areas::default();
     let mut dirty = true;
@@ -166,6 +167,7 @@ async fn event_loop(
                 }
             } => Input::Protocol(event),
             Some(outcome) = outcome_rx.recv() => Input::Outcome(outcome),
+            Some(new_theme) = theme_rx.recv() => Input::Theme(new_theme),
             _ = tick.tick() => Input::Tick,
             Some(code) = terminate.recv() => Input::Signal(code),
         };
@@ -216,16 +218,11 @@ async fn event_loop(
                 app.older_backlog_failed(buffer, &error);
                 dirty = true;
             }
-            Input::Tick => {
-                ticks = ticks.wrapping_add(1);
-                dirty |= app.tick(Instant::now());
-                if ticks.is_multiple_of(4)
-                    && let Some(new_theme) = watcher.poll()
-                {
-                    theme = new_theme;
-                    dirty = true;
-                }
+            Input::Theme(new_theme) => {
+                theme = new_theme;
+                dirty = true;
             }
+            Input::Tick => dirty |= app.tick(Instant::now()),
             Input::Signal(code) => {
                 return Ok(Exit {
                     code,
@@ -285,6 +282,30 @@ fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effe
     }
 }
 
+/// Poll the theme file once a second on a thread of its own, so a slow
+/// filesystem can't stall the UI. The thread ends with the receiver.
+fn watch_theme(mut watcher: ThemeWatcher) -> mpsc::UnboundedReceiver<Theme> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    if watcher.is_active() {
+        let spawned = std::thread::Builder::new()
+            .name("theme-watcher".into())
+            .spawn(move || {
+                while !tx.is_closed() {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if let Some(theme) = watcher.poll()
+                        && tx.send(theme).is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!("theme watcher not started: {e}");
+        }
+    }
+    rx
+}
+
 /// Run one request as its own task; failures come back as outcomes.
 fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::UnboundedSender<Failure>) {
     let handle = client.handle();
@@ -315,11 +336,12 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                     });
                 }
             }
-            Effect::RequestOlderBacklog { buffer, before } => {
-                if let Err(e) = handle
-                    .request_backlog_before(buffer, before, DEFAULT_BACKLOG_LIMIT)
-                    .await
-                {
+            Effect::RequestOlderBacklog {
+                buffer,
+                before,
+                limit,
+            } => {
+                if let Err(e) = handle.request_backlog_before(buffer, before, limit).await {
                     let _ = outcomes.send(Failure::OlderBacklog {
                         buffer,
                         error: e.to_string(),

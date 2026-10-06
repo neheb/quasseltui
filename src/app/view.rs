@@ -21,7 +21,7 @@ use crate::app::format::{SegmentKind, buffer_label, ordered_buffers};
 use crate::app::log_view::RowKey;
 use crate::app::model::{Activity, App, Focus, Severity, TreeRow};
 use crate::app::theme::Theme;
-use crate::protocol::types::BufferType;
+use crate::protocol::types::{BufferId, BufferType, NetworkId};
 use crate::util::text::sanitize_terminal;
 
 const SIDEBAR_WIDTH: u16 = 28;
@@ -75,69 +75,79 @@ fn render_tree(
     area: Rect,
 ) -> Vec<Option<TreeRow>> {
     let inner_width = usize::from(area.width.saturating_sub(2));
-    let mut lines: Vec<(Line<'static>, Option<TreeRow>)> = Vec::new();
+    let height = usize::from(area.height.saturating_sub(2));
+
+    // Lay out the rows first (cheap), then style only the visible ones.
     let buffers = ordered_buffers(&app.state);
-    for (network_id, network) in &app.state.networks {
-        let name = if network.network_name.is_empty() {
-            format!("(network {network_id})")
-        } else {
-            sanitize_terminal(&network.network_name)
-        };
-        let style = if network.is_connected || !app.is_live() {
-            Style::default().add_modifier(Modifier::BOLD)
-        } else {
-            theme.muted_style().add_modifier(Modifier::BOLD)
-        };
-        lines.push((
-            Line::from(Span::styled(truncate(&name, inner_width), style)),
-            Some(TreeRow::Network(*network_id)),
-        ));
-        for buf in buffers.iter().filter(|b| b.network_id == *network_id) {
-            let label = format!("  {}", buffer_label(buf));
-            // Channels we're not in are dimmed, like Quassel's own client.
-            let mut style =
-                if buf.kind == BufferType::Channel && app.is_live() && !app.is_joined(buf) {
-                    theme.muted_style()
-                } else {
-                    Style::default()
-                };
-            match app.buffer_activity.get(&buf.buffer_id) {
-                Some(Activity::Highlight) => {
-                    style = theme.fg(theme.highlight).add_modifier(Modifier::BOLD)
-                }
-                Some(Activity::Message) => style = style.add_modifier(Modifier::BOLD),
-                None => {}
-            }
-            if Some(buf.buffer_id) == app.active_buffer_id {
-                style = theme.accent_style();
-            }
-            let text = format!("{:<inner_width$}", truncate(&label, inner_width));
-            lines.push((
-                Line::from(Span::styled(text, style)),
-                Some(TreeRow::Buffer(buf.buffer_id)),
-            ));
+    let mut rows: Vec<TreeRow> = Vec::with_capacity(app.state.networks.len() + buffers.len());
+    let mut by_network = buffers.iter().peekable();
+    for network_id in app.state.networks.keys() {
+        rows.push(TreeRow::Network(*network_id));
+        while let Some(buf) = by_network.next_if(|b| b.network_id == *network_id) {
+            rows.push(TreeRow::Buffer(buf.buffer_id));
         }
     }
 
-    // Keep the cursor (or the active buffer) on screen.
-    let height = usize::from(area.height.saturating_sub(2));
+    // Keep the active buffer on screen.
     let target = app.active_buffer_id.map(TreeRow::Buffer);
-    let target_line = lines
+    let offset = rows
         .iter()
-        .position(|(_, row)| row.is_some() && *row == target);
-    let offset = target_line.map_or(0, |line| (line + 1).saturating_sub(height));
+        .position(|row| Some(*row) == target)
+        .map_or(0, |line| (line + 1).saturating_sub(height));
+    let visible = &rows[offset.min(rows.len())..(offset + height).min(rows.len())];
 
-    let rows: Vec<Option<TreeRow>> = lines.iter().skip(offset).map(|(_, row)| *row).collect();
-    let text: Vec<Line<'static>> = lines
-        .into_iter()
-        .skip(offset)
-        .map(|(line, _)| line)
+    let text: Vec<Line<'static>> = visible
+        .iter()
+        .map(|row| match *row {
+            TreeRow::Network(network_id) => network_line(app, theme, network_id, inner_width),
+            TreeRow::Buffer(buffer_id) => buffer_line(app, theme, buffer_id, inner_width),
+        })
         .collect();
     frame.render_widget(
         Paragraph::new(text).block(block(" Buffers ", false, theme)),
         area,
     );
-    rows
+    visible.iter().copied().map(Some).collect()
+}
+
+fn network_line(app: &App, theme: &Theme, network_id: NetworkId, width: usize) -> Line<'static> {
+    let Some(network) = app.state.networks.get(&network_id) else {
+        return Line::default();
+    };
+    let name = if network.network_name.is_empty() {
+        format!("(network {network_id})")
+    } else {
+        sanitize_terminal(&network.network_name)
+    };
+    let style = if network.is_connected || !app.is_live() {
+        Style::default().add_modifier(Modifier::BOLD)
+    } else {
+        theme.muted_style().add_modifier(Modifier::BOLD)
+    };
+    Line::from(Span::styled(truncate(&name, width), style))
+}
+
+fn buffer_line(app: &App, theme: &Theme, buffer_id: BufferId, width: usize) -> Line<'static> {
+    let Some(buf) = app.state.buffers.get(&buffer_id) else {
+        return Line::default();
+    };
+    let label = format!("  {}", buffer_label(buf));
+    // Channels we're not in are dimmed, like Quassel's own client.
+    let mut style = if buf.kind == BufferType::Channel && app.is_live() && !app.is_joined(buf) {
+        theme.muted_style()
+    } else {
+        Style::default()
+    };
+    match app.buffer_activity.get(&buf.buffer_id) {
+        Some(Activity::Highlight) => style = theme.fg(theme.highlight).add_modifier(Modifier::BOLD),
+        Some(Activity::Message) => style = style.add_modifier(Modifier::BOLD),
+        None => {}
+    }
+    if Some(buf.buffer_id) == app.active_buffer_id {
+        style = theme.accent_style();
+    }
+    let text = format!("{:<width$}", truncate(&label, width));
+    Line::from(Span::styled(text, style))
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -497,6 +507,36 @@ mod tests {
         for (w, h) in [(1, 1), (5, 3), (20, 4), (30, 6)] {
             draw(&mut app, w, h);
         }
+    }
+
+    #[test]
+    fn long_sidebar_shows_only_visible_rows_around_the_active_buffer() {
+        let mut state = ClientState::new(0);
+        state.networks.insert(NetworkId(1), Network::new("1"));
+        for i in 1..=50 {
+            state.buffers.insert(
+                BufferId(i),
+                BufferInfo {
+                    buffer_id: BufferId(i),
+                    network_id: NetworkId(1),
+                    kind: BufferType::Channel,
+                    group_id: 0,
+                    name: format!("#c{i:02}"),
+                },
+            );
+        }
+        let mut app = App::new(state, false, false);
+        app.active_buffer_id = Some(BufferId(50));
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        let mut areas = Areas::default();
+        terminal
+            .draw(|frame| areas = render(frame, &mut app, &Theme::default()))
+            .unwrap();
+        assert_eq!(areas.tree_rows.len(), 10);
+        assert_eq!(
+            areas.tree_rows.last(),
+            Some(&Some(TreeRow::Buffer(BufferId(50))))
+        );
     }
 
     #[test]

@@ -203,7 +203,14 @@ pub struct ClientInitAck {
 impl ClientInitAck {
     pub fn from_map(data: &VariantMap) -> Result<Self> {
         Ok(Self {
-            core_features: require_int(data, "CoreFeatures")? as u32,
+            // A negative or oversized value must fail, not wrap into a bit
+            // pattern that selects the wrong feature tier.
+            core_features: u32::try_from(require_int(data, "CoreFeatures")?).map_err(|_| {
+                Error::Handshake(format!(
+                    "CoreFeatures out of range: {:?}",
+                    data.get("CoreFeatures")
+                ))
+            })?,
             feature_list: optional_str_list(data, "FeatureList")?,
             configured: require_bool(data, "Configured")?,
             storage_backends: optional_map_list(data, "StorageBackends")?
@@ -432,6 +439,14 @@ mod tests {
         assert_eq!(parsed.protocol_version, Some(10));
         assert!(parsed.storage_backends.is_empty());
         assert!(parsed.authenticators.is_empty());
+    }
+
+    #[test]
+    fn out_of_range_core_features_is_rejected() {
+        for bad in [Variant::Int(-1), Variant::LongLong(1 << 40)] {
+            let err = ClientInitAck::from_map(&ack(vec![("CoreFeatures", bad)])).unwrap_err();
+            assert!(matches!(err, Error::Handshake(_)), "{err:?}");
+        }
     }
 
     #[test]

@@ -36,6 +36,14 @@ impl IrcChannel {
         }
     }
 
+    /// Re-address after `__objectRenamed__`.
+    pub fn rename(&mut self, object_name: &str) {
+        self.object_name = object_name.to_string();
+        let (network_id, name) = split_object_name(object_name);
+        self.network_id = network_id;
+        self.name = name;
+    }
+
     pub fn members(&self) -> impl Iterator<Item = &String> {
         self.user_modes.keys()
     }

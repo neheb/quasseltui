@@ -48,7 +48,8 @@ use crate::protocol::signalproxy::{
     encode_signalproxy_payload,
 };
 use crate::protocol::transport::{
-    DEFAULT_CONNECT_TIMEOUT, TlsOptions, close_stream, fmt_secs, open_tcp_connection, start_tls,
+    CLOSE_GRACE, DEFAULT_CONNECT_TIMEOUT, TlsOptions, close_stream, fmt_secs, open_tcp_connection,
+    start_tls,
 };
 use crate::qt::datastream::QDateTime;
 
@@ -469,7 +470,17 @@ impl Runner {
 
         let (reason, error) = self.connected_loop(read_half, shutdown_rx, failed_rx).await;
         stop_tx.send_replace(true);
-        let _ = writer.await;
+        // The writer flushes what was queued and closes, but a write into a
+        // peer that stopped reading can stall for the whole write timeout.
+        // Closing must not wait on that.
+        let mut writer = writer;
+        if tokio::time::timeout(CLOSE_GRACE * 2, &mut writer)
+            .await
+            .is_err()
+        {
+            tracing::warn!("writer did not finish closing; dropping the connection");
+            writer.abort();
+        }
         if let Some(reason) = reason {
             self.disconnect(reason, error).await;
         } else {
@@ -699,8 +710,21 @@ impl Runner {
                 SignalProxyMessage::InitData(m) => ProtocolEvent::InitData(m),
                 SignalProxyMessage::InitRequest(m) => ProtocolEvent::InitRequest(m),
             };
-            if self.events.send(event).await.is_err() {
-                return (None, None);
+            // A consumer that stops taking events would otherwise park the
+            // loop here, unread and with heartbeats unanswered, until the core
+            // drops us for an unrelated-looking reason.
+            match tokio::time::timeout(liveness, self.events.send(event)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => return (None, None),
+                Err(_) => {
+                    return (
+                        Some(format!(
+                            "client stopped processing events for {}s",
+                            fmt_secs(liveness)
+                        )),
+                        Some(Error::Other("event consumer stalled".into())),
+                    );
+                }
             }
         }
     }

@@ -203,11 +203,66 @@ fn unknown_class_is_dropped() {
 }
 
 #[test]
-fn sync_for_unseen_network_creates_it() {
-    let mut h = Harness::new(&[], vec![]);
+fn objects_on_unknown_networks_are_ignored() {
+    let mut h = Harness::new(&[1], vec![]);
     h.sync(b"Network", "4", b"setMyNick", vec!["me".into()]);
-    assert_eq!(h.names(), ["NetworkAdded", "NetworkUpdated"]);
-    assert_eq!(h.state.networks[&NetworkId(4)].my_nick, "me");
+    h.init(b"Network", "5", map(vec![("networkName", "x".into())]));
+    h.sync(b"IrcUser", "4/bob", b"setAway", vec![Variant::Bool(true)]);
+    h.sync(b"IrcChannel", "4/#c", b"setTopic", vec!["t".into()]);
+    h.init(b"IrcUser", "nope", VariantMap::new());
+    assert!(h.take().is_empty());
+    assert_eq!(h.state.networks.len(), 1);
+    assert!(h.dispatcher.user("4/bob").is_none());
+    assert!(h.dispatcher.channel("4/#c").is_none());
+    // On a known network they are created.
+    h.sync(b"IrcUser", "1/bob", b"setAway", vec![Variant::Bool(true)]);
+    assert!(h.dispatcher.user("1/bob").unwrap().away);
+}
+
+#[test]
+fn buffer_syncer_ignores_unknown_buffers() {
+    let mut h = Harness::new(&[1], vec![buffer(10, 1, BufferType::Channel, "#a")]);
+    h.init(
+        b"BufferSyncer",
+        "",
+        map(vec![(
+            "LastSeenMsg",
+            Variant::List(vec![bid(10), mid(1), bid(99), mid(2)]),
+        )]),
+    );
+    h.sync(b"BufferSyncer", "", b"setMarkerLine", vec![bid(98), mid(3)]);
+    h.sync(
+        b"BufferSyncer",
+        "",
+        b"setBufferActivity",
+        vec![bid(97), Variant::Int(1)],
+    );
+    let syncer = h.state.buffer_syncer.as_ref().unwrap();
+    assert_eq!(syncer.last_seen_by_buffer.keys().collect::<Vec<_>>(), [&10]);
+    assert!(syncer.marker_lines_by_buffer.is_empty());
+    assert!(syncer.activities.is_empty());
+    assert!(h.take().is_empty());
+}
+
+#[test]
+fn channel_rename_updates_name_and_network_list() {
+    let mut h = Harness::new(&[1], vec![]);
+    h.sync(b"Network", "1", b"addIrcChannel", vec!["#old".into()]);
+    h.sync(b"IrcChannel", "1/#old", b"setTopic", vec!["t".into()]);
+    h.rpc(
+        OBJECT_RENAMED_SIGNAL,
+        vec![
+            Variant::ByteArray(b"IrcChannel".to_vec()),
+            "1/#new".into(),
+            "1/#old".into(),
+        ],
+    );
+    let chan = h.dispatcher.channel("1/#new").unwrap();
+    assert_eq!(chan.name, "#new");
+    assert_eq!(chan.topic, "t");
+    let net = &h.state.networks[&NetworkId(1)];
+    assert!(net.channels.contains("#new"));
+    assert!(!net.channels.contains("#old"));
 }
 
 #[test]
@@ -359,6 +414,25 @@ fn display_msg_for_unknown_buffer_emits_buffer_added_first() {
 }
 
 #[test]
+fn live_messages_stay_sorted_and_unique() {
+    let info = buffer(10, 1, BufferType::Channel, "#a");
+    let mut h = Harness::new(&[1], vec![info.clone()]);
+    for id in [1, 3, 3, 2] {
+        h.rpc(
+            DISPLAY_MSG_SIGNAL,
+            vec![msg_variant(message(id, &info, "x"))],
+        );
+    }
+    // The repeat is dropped without an event; the late one is placed.
+    assert_eq!(h.take().len(), 3);
+    let ids: Vec<i64> = h.state.messages[&BufferId(10)]
+        .iter()
+        .map(|m| m.msg_id.0)
+        .collect();
+    assert_eq!(ids, [1, 2, 3]);
+}
+
+#[test]
 fn retention_cap_drops_oldest() {
     let info = buffer(10, 1, BufferType::Channel, "#busy");
     let mut h = Harness::new(&[1], vec![info.clone()]);
@@ -441,6 +515,46 @@ fn backlog_params(buffer: Variant, messages: Variant) -> Vec<Variant> {
         Variant::Int(0),
         messages,
     ]
+}
+
+#[test]
+fn backlog_count_is_what_survives_the_cap() {
+    let info = buffer(10, 1, BufferType::Channel, "#busy");
+    let mut h = Harness::new(&[1], vec![info.clone()]);
+    h.state.max_messages_per_buffer = 3;
+    for i in 10..=11 {
+        h.rpc(
+            DISPLAY_MSG_SIGNAL,
+            vec![msg_variant(message(i, &info, "live"))],
+        );
+    }
+    h.take();
+    // Three older messages arrive; only one fits.
+    h.sync(
+        b"BacklogManager",
+        "",
+        b"receiveBacklog",
+        backlog_params(
+            bid(10),
+            Variant::List(
+                (1..=3)
+                    .map(|i| msg_variant(message(i, &info, "old")))
+                    .collect(),
+            ),
+        ),
+    );
+    assert!(matches!(
+        &h.take()[..],
+        [ClientEvent::BacklogReceived {
+            buffer_id: BufferId(10),
+            count: 1
+        }]
+    ));
+    let ids: Vec<i64> = h.state.messages[&BufferId(10)]
+        .iter()
+        .map(|m| m.msg_id.0)
+        .collect();
+    assert_eq!(ids, [3, 10, 11]);
 }
 
 #[test]
@@ -725,7 +839,12 @@ fn network_lifecycle_rpcs() {
 
 #[test]
 fn marker_lines_seed_without_clobbering_local_markers() {
-    let mut h = Harness::new(&[1], vec![]);
+    let mut h = Harness::new(
+        &[1],
+        (1..=3)
+            .map(|i| buffer(i, 1, BufferType::Channel, &format!("#{i}")))
+            .collect(),
+    );
     h.state.read_markers.insert(BufferId(2), MsgId(222));
     let mut markers = VariantMap::new();
     markers.insert("1".into(), mid(100));
@@ -743,7 +862,13 @@ fn marker_lines_seed_without_clobbering_local_markers() {
 
 #[test]
 fn buffer_activity_reported_on_init_and_sync() {
-    let mut h = Harness::new(&[1], vec![]);
+    let mut h = Harness::new(
+        &[1],
+        vec![
+            buffer(1, 1, BufferType::Channel, "#a"),
+            buffer(2, 1, BufferType::Channel, "#b"),
+        ],
+    );
     h.init(
         b"BufferSyncer",
         "",

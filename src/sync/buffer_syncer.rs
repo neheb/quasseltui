@@ -119,11 +119,25 @@ impl BufferSyncer {
 
     fn forget(&mut self, bid: i64) {
         self.removed_buffers.insert(bid);
+        self.drop_buffer(bid);
+    }
+
+    /// Drop a buffer's per-buffer state, e.g. when its network goes away.
+    pub fn drop_buffer(&mut self, bid: i64) {
         self.last_seen_by_buffer.remove(&bid);
         self.marker_lines_by_buffer.remove(&bid);
         self.activities.remove(&bid);
         self.highlight_counts.remove(&bid);
         self.activity_changed.remove(&bid);
+    }
+
+    /// Keep per-buffer state only for buffers `known` accepts.
+    pub fn retain_buffers(&mut self, known: impl Fn(i64) -> bool) {
+        self.last_seen_by_buffer.retain(|bid, _| known(*bid));
+        self.marker_lines_by_buffer.retain(|bid, _| known(*bid));
+        self.activities.retain(|bid, _| known(*bid));
+        self.highlight_counts.retain(|bid, _| known(*bid));
+        self.activity_changed.retain(|bid| known(*bid));
     }
 
     pub fn apply_init_data(&mut self, data: &VariantMap) {

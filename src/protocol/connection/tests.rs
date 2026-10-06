@@ -317,6 +317,31 @@ async fn dead_connection_is_detected_by_liveness_watchdog() {
 }
 
 #[tokio::test]
+async fn stalled_consumer_ends_the_session_with_a_diagnosis() {
+    // More events than the channel holds, and nobody reading them.
+    let frames: Vec<Vec<u8>> = (0..EVENT_CHANNEL_CAPACITY + 10)
+        .map(|_| framed_sp(&SignalProxyMessage::Sync(sync_msg("x"))))
+        .collect();
+    let fake = fake_core(inbound(base_init_ack(), login_ack(), &frames), false, true);
+    let mut opts = options(false);
+    opts.liveness_timeout = Duration::from_millis(50);
+    let conn = QuasselConnection::with_connector(opts, fake.connector.clone());
+    let (handle, mut rx) = conn.start();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut last = None;
+    while let Some(event) = rx.recv().await {
+        last = Some(event);
+    }
+    let last = last.unwrap();
+    assert!(
+        reason(&last).contains("stopped processing events"),
+        "{}",
+        reason(&last)
+    );
+    assert_eq!(handle.state(), ConnState::Closed);
+}
+
+#[tokio::test]
 async fn silent_peer_fails_the_handshake_with_a_timeout() {
     let fake = fake_core(Vec::new(), false, true);
     let mut opts = options(false);

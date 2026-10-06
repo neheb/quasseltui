@@ -102,7 +102,8 @@ pub enum ClientEvent {
         buffer_id: BufferId,
     },
     MessageReceived(IrcMessage),
-    /// A backlog reply was merged; `count` new messages. Emitted for every
+    /// A backlog reply was merged; `count` new messages kept (after the
+    /// retention cap). Emitted for every
     /// reply that maps to a live buffer, including empty ones, so the UI
     /// knows the request completed.
     BacklogReceived {

@@ -59,7 +59,8 @@ pub struct Network {
     pub connection_state: NetworkConnectionState,
     pub is_connected: bool,
     /// Per-channel field maps from `IrcUsersAndChannels`, keyed by channel
-    /// name (no network prefix).
+    /// name (no network prefix). The dispatcher takes these (and
+    /// `users_seed`) to build the roster objects, leaving them empty.
     pub channels_seed: BTreeMap<String, VariantMap>,
     /// Per-user field maps, keyed by nick.
     pub users_seed: BTreeMap<String, VariantMap>,
@@ -184,16 +185,15 @@ impl Network {
                 .filter(|v| v.truthy())
                 .or_else(|| map.get(b))
                 .and_then(Variant::as_map)
-                .cloned()
         };
         if let Some(users) = pick("Users", "users") {
             self.users_seed =
-                explode_parallel_arrays(&users, "nick").unwrap_or_else(|| legacy_seed(&users));
+                explode_parallel_arrays(users, "nick").unwrap_or_else(|| legacy_seed(users));
             self.users.extend(self.users_seed.keys().cloned());
         }
         if let Some(channels) = pick("Channels", "channels") {
-            self.channels_seed = explode_parallel_arrays(&channels, "name")
-                .unwrap_or_else(|| legacy_seed(&channels));
+            self.channels_seed =
+                explode_parallel_arrays(channels, "name").unwrap_or_else(|| legacy_seed(channels));
             self.channels.extend(self.channels_seed.keys().cloned());
         }
     }
@@ -213,24 +213,44 @@ pub fn explode_parallel_arrays(
     value: &VariantMap,
     key_field: &str,
 ) -> Option<BTreeMap<String, VariantMap>> {
-    let keys = value.get(key_field)?.list_items()?;
-    let columns: Vec<(&String, Vec<Variant>)> = value
+    // Columns are read in place: a big network's roster is tens of
+    // thousands of entries per column, and copying whole columns per
+    // lookup multiplied the peak memory of one InitData.
+    let keys = value.get(key_field)?;
+    let rows = column_len(keys)?;
+    let columns: Vec<(&String, &Variant)> = value
         .iter()
-        .filter_map(|(attr, column)| column.list_items().map(|items| (attr, items)))
+        .filter(|(_, column)| column_len(column).is_some())
         .collect();
     let mut out = BTreeMap::new();
-    for (i, key) in keys.iter().enumerate() {
-        let name = string_or_empty(key);
+    for i in 0..rows {
+        let name = column_item(keys, i).map_or_else(String::new, |key| string_or_empty(&key));
         if name.is_empty() {
             continue;
         }
         let entry: VariantMap = columns
             .iter()
-            .filter_map(|(attr, items)| items.get(i).map(|item| ((*attr).clone(), item.clone())))
+            .filter_map(|(attr, column)| column_item(column, i).map(|item| ((*attr).clone(), item)))
             .collect();
         out.insert(name, entry);
     }
     Some(out)
+}
+
+fn column_len(column: &Variant) -> Option<usize> {
+    match column {
+        Variant::List(items) => Some(items.len()),
+        Variant::StringList(items) => Some(items.len()),
+        _ => None,
+    }
+}
+
+fn column_item(column: &Variant, i: usize) -> Option<Variant> {
+    match column {
+        Variant::List(items) => items.get(i).cloned(),
+        Variant::StringList(items) => items.get(i).cloned().map(Variant::String),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

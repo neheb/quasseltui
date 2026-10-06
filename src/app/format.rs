@@ -181,16 +181,14 @@ pub fn buffer_sort_key(buf: &BufferInfo) -> (i16, String) {
 /// Buffers in sidebar order: networks by id, then by [`buffer_sort_key`].
 /// Buffers whose network isn't known aren't shown.
 pub fn ordered_buffers(state: &ClientState) -> Vec<&BufferInfo> {
-    let mut out = Vec::new();
-    for network_id in state.networks.keys() {
-        let mut buffers: Vec<&BufferInfo> = state
-            .buffers
-            .values()
-            .filter(|b| b.network_id == *network_id)
-            .collect();
-        buffers.sort_by_key(|b| buffer_sort_key(b));
-        out.extend(buffers);
-    }
+    let mut out: Vec<&BufferInfo> = state
+        .buffers
+        .values()
+        .filter(|b| state.networks.contains_key(&b.network_id))
+        .collect();
+    // Cached: the key lowercases the name, once per buffer rather than per
+    // comparison.
+    out.sort_by_cached_key(|b| (b.network_id, buffer_sort_key(b)));
     out
 }
 

@@ -19,6 +19,10 @@ use crate::sync::network::Network;
 /// so history is bounded; 5000 lines is about a day of a busy channel.
 pub const DEFAULT_MAX_MESSAGES_PER_BUFFER: usize = 5000;
 
+/// Most buffers kept. A message for a new buffer past this is dropped:
+/// with the per-buffer cap, this bounds history memory overall.
+pub const MAX_BUFFERS: usize = 10_000;
+
 #[derive(Debug, Clone)]
 pub struct ClientState {
     pub session: Option<SessionInit>,

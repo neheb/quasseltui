@@ -29,7 +29,7 @@ use crate::app::format::{
     CHAT_TYPES, DisplaySettings, is_chat, ordered_buffer_ids, pick_default_buffer,
 };
 use crate::app::log_view::LogView;
-use crate::client::{ClientState, IrcMessage};
+use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, IrcMessage};
 use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId, NetworkId};
 use crate::sync::events::ClientEvent;
 use crate::util::text::sanitize_and_truncate;
@@ -41,6 +41,8 @@ const HISTORY_LIMIT: usize = 100;
 pub const MAX_NOTICES: usize = 100;
 /// Two clicks on the same sidebar row within this make a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// A history request with no reply after this is given up on.
+const BACKLOG_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_PLACEHOLDER: &str = "Type a message and press Enter…";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,10 +98,12 @@ pub enum Effect {
         text: String,
     },
     RequestBacklog(BufferId),
-    /// Fetch history older than `before` (the oldest message we have).
+    /// Fetch up to `limit` messages older than `before` (the oldest
+    /// message we have).
     RequestOlderBacklog {
         buffer: BufferId,
         before: MsgId,
+        limit: i32,
     },
     /// A `/command` the user triggered by other means than typing it, so
     /// a failure isn't put back in the input bar.
@@ -270,8 +274,10 @@ pub struct App {
     /// Backlog requests in flight. The core answers them in the order they
     /// were sent, so a reply belongs to the initial request if one is
     /// pending for that buffer, and to the older-history request otherwise.
-    initial_pending: HashSet<BufferId>,
-    pub(crate) older_pending: HashSet<BufferId>,
+    /// Each maps to when it was sent; a reply that never comes (a
+    /// malformed one is dropped) expires after [`BACKLOG_TIMEOUT`].
+    initial_pending: HashMap<BufferId, Instant>,
+    pub(crate) older_pending: HashMap<BufferId, Instant>,
     /// Buffers whose history the core has no more of.
     history_start: HashSet<BufferId>,
     /// The previous sidebar click, for double-click detection.
@@ -302,8 +308,8 @@ impl App {
             live,
             reconnectable,
             pending_input: None,
-            initial_pending: HashSet::new(),
-            older_pending: HashSet::new(),
+            initial_pending: HashMap::new(),
+            older_pending: HashMap::new(),
             history_start: HashSet::new(),
             last_click: None,
             ever_active: false,
@@ -352,10 +358,45 @@ impl App {
 
     /// Drop expired toasts. Returns whether anything changed.
     pub fn tick(&mut self, now: Instant) -> bool {
+        let expired = self.expire_backlog_requests(now);
         let before = self.toasts.len();
         self.toasts
             .retain(|t| now.saturating_duration_since(t.shown_at) < t.lifetime());
-        before != self.toasts.len()
+        expired || before != self.toasts.len()
+    }
+
+    /// Give up on history requests the core never answered, so the view
+    /// doesn't say "loading" forever and the request can be retried.
+    fn expire_backlog_requests(&mut self, now: Instant) -> bool {
+        let stale = |sent: &Instant| now.saturating_duration_since(*sent) >= BACKLOG_TIMEOUT;
+        let initial: Vec<BufferId> = self
+            .initial_pending
+            .iter()
+            .filter(|(_, sent)| stale(sent))
+            .map(|(id, _)| *id)
+            .collect();
+        let older: Vec<BufferId> = self
+            .older_pending
+            .iter()
+            .filter(|(_, sent)| stale(sent))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &initial {
+            self.initial_pending.remove(id);
+            self.state.release_backlog(*id);
+        }
+        for id in &older {
+            self.older_pending.remove(id);
+        }
+        if initial.is_empty() && older.is_empty() {
+            return false;
+        }
+        tracing::warn!("history requests timed out: {initial:?} {older:?}");
+        self.notify(
+            "The core didn't answer a history request",
+            Severity::Warning,
+        );
+        true
     }
 
     // -- client events (the bridge) -------------------------------------------
@@ -514,7 +555,7 @@ impl App {
             // No history requests once the socket is gone: they'd fail and
             // spam notices on every post-drop buffer switch.
             if self.live && !self.connection_lost && self.state.claim_backlog(id) {
-                self.initial_pending.insert(id);
+                self.initial_pending.insert(id, Instant::now());
                 effects.push(Effect::RequestBacklog(id));
             }
         }
@@ -689,12 +730,20 @@ impl App {
     /// `initial_pending`). An older-history reply with nothing new means the
     /// core has no more.
     fn older_backlog_arrived(&mut self, buffer: BufferId, count: usize) {
-        if self.initial_pending.remove(&buffer) {
+        if self.initial_pending.remove(&buffer).is_some() {
             return;
         }
-        if self.older_pending.remove(&buffer) && count == 0 {
+        // Nothing new with room to spare: the core has nothing older. (At
+        // the cap, a page trimmed away by racing live traffic proves
+        // nothing.)
+        if self.older_pending.remove(&buffer).is_some() && count == 0 && !self.at_cap(buffer) {
             self.history_start.insert(buffer);
         }
+    }
+
+    fn at_cap(&self, buffer: BufferId) -> bool {
+        let cap = self.state.max_messages_per_buffer;
+        cap > 0 && self.state.messages_for_buffer(buffer).len() >= cap
     }
 
     /// After a move upward: at the top of what we have, fetch the next page
@@ -705,7 +754,7 @@ impl App {
         };
         if !self.live
             || self.connection_lost
-            || self.older_pending.contains(&buffer)
+            || self.older_pending.contains_key(&buffer)
             || self.history_start.contains(&buffer)
             || self.log.top_line(&self.state) != 0
         {
@@ -716,15 +765,24 @@ impl App {
         let Some(oldest) = messages.first().map(|m| m.msg_id) else {
             return Vec::new();
         };
-        // At the retention cap, older messages would be trimmed right away.
+        // Ask only for what fits under the retention cap: a merge past it
+        // trims the oldest messages, which is exactly this page.
         let cap = self.state.max_messages_per_buffer;
-        if cap > 0 && messages.len() >= cap {
+        let room = if cap == 0 {
+            usize::MAX
+        } else {
+            cap.saturating_sub(messages.len())
+        };
+        if room == 0 {
             return Vec::new();
         }
-        self.older_pending.insert(buffer);
+        let limit =
+            i32::try_from(room).map_or(DEFAULT_BACKLOG_LIMIT, |r| r.min(DEFAULT_BACKLOG_LIMIT));
+        self.older_pending.insert(buffer, Instant::now());
         vec![Effect::RequestOlderBacklog {
             buffer,
             before: oldest,
+            limit,
         }]
     }
 
@@ -740,16 +798,15 @@ impl App {
     /// What the top of the active buffer's history looks like, for the view.
     pub fn history_status(&mut self) -> Option<&'static str> {
         let buffer = self.log.buffer?;
-        if self.older_pending.contains(&buffer) {
+        if self.older_pending.contains_key(&buffer) {
             return Some("loading older messages…");
         }
         if self.log.top_line(&self.state) != 0 {
             return None;
         }
-        let cap = self.state.max_messages_per_buffer;
         if self.history_start.contains(&buffer) {
             Some("start of history")
-        } else if cap > 0 && self.state.messages_for_buffer(buffer).len() >= cap {
+        } else if self.at_cap(buffer) {
             Some("history limit reached")
         } else {
             None

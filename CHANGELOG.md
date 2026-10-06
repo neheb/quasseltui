@@ -34,6 +34,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closing.
 - `login-only`/`stream-only`/`dump-state` exit codes now follow the kind of
   error rather than the wording of its message.
+- **Loading older history no longer discards most of what it fetched**
+  near the 5000-line limit; requests only ask for what fits, and "start of
+  history" is no longer shown while the core still has more.
+- A history request the core never answers expires after 60 s instead of
+  showing "loading older messages…" forever.
+- Quitting no longer waits up to 90 s on a core that stopped reading, and a
+  stalled UI ends the session with a clear reason instead of a misleading
+  "core closed connection".
+- Repeated or out-of-order live messages no longer show twice or land after
+  the newest line.
+- A channel renamed by the core is now shown under its new name, with the
+  right joined/parted dimming.
+- State the core can create is bounded: objects for unknown networks are
+  ignored, and IRC users, channels and buffers are capped. Network
+  initialization no longer copies the whole roster several times.
+- The theme file is checked off the UI thread, and the sidebar only builds
+  the rows on screen.
 
 ## [0.10.0] - 2026-10-03
 

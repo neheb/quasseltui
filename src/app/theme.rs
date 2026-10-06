@@ -202,7 +202,14 @@ impl ThemeWatcher {
         }
     }
 
-    /// A new theme if the file changed since the last load.
+    /// Whether there is anything to watch.
+    pub fn is_active(&self) -> bool {
+        !self.no_color && self.path.is_some()
+    }
+
+    /// A new theme if the file changed since the last load. This touches
+    /// the filesystem (which can block on a network home), so the UI runs
+    /// it on its own thread.
     pub fn poll(&mut self) -> Option<Theme> {
         if self.no_color {
             return None;

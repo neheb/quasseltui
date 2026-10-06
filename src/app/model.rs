@@ -11,8 +11,9 @@
 //!   connection (exit with the reason). After that it enters a visible
 //!   disconnected state: history stays on screen, the input is disabled,
 //!   and Ctrl+R reconnects over the same state.
-//! - The active buffer is picked once at startup (where the activity is)
-//!   and afterwards only changes on the user's request, or when the active
+//! - The active buffer is picked once, when the session opens (the first
+//!   buffer, or the first that appears if there are none yet), and
+//!   afterwards only changes on the user's request, or when the active
 //!   buffer is removed.
 //! - Chat lines (not joins, parts or other events) for other buffers mark
 //!   them in the sidebar ("highlight" for highlights and queries, sticky
@@ -122,6 +123,11 @@ pub enum Effect {
     Reconnect,
     /// Put text on the system clipboard (via the terminal).
     Copy(String),
+    /// Tab while typing: call [`App::complete_nick`] with the active
+    /// channel's members, which only the client knows.
+    CompleteNick {
+        backward: bool,
+    },
 }
 
 /// How the app wants to exit.
@@ -304,7 +310,6 @@ pub struct App {
     pending_yank: bool,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
-    ever_active: bool,
     session_opened: bool,
     presession_fatal: bool,
 }
@@ -335,7 +340,6 @@ impl App {
             last_click: None,
             pending_yank: false,
             completion: None,
-            ever_active: false,
             session_opened: false,
             presession_fatal: true,
         };
@@ -431,7 +435,6 @@ impl App {
                 if let Some(active) = self.active_buffer_id {
                     // Reconnect: keep the user's buffer and refresh it, which
                     // re-requests the backlog to fill the gap since the drop.
-                    self.ever_active = true;
                     self.active_updated(Some(active))
                 } else {
                     self.maybe_pick_default()
@@ -453,7 +456,10 @@ impl App {
                     self.maybe_pick_default()
                 }
             }
-            ClientEvent::MessageReceived(message) => self.handle_message(message),
+            ClientEvent::MessageReceived(message) => {
+                self.handle_message(message);
+                Vec::new()
+            }
             ClientEvent::BacklogReceived { buffer_id, count } => {
                 self.older_backlog_arrived(*buffer_id, *count);
                 if Some(*buffer_id) == self.active_buffer_id && *count > 0 {
@@ -484,27 +490,17 @@ impl App {
 
     fn maybe_pick_default(&mut self) -> Vec<Effect> {
         if self.active_buffer_id.is_some() {
-            self.ever_active = true;
             return Vec::new();
         }
         let Some(id) = pick_default_buffer(&self.state) else {
             return Vec::new();
         };
         self.active_buffer_id = Some(id);
-        self.ever_active = true;
         self.active_updated(Some(id))
     }
 
-    fn handle_message(&mut self, message: &IrcMessage) -> Vec<Effect> {
+    fn handle_message(&mut self, message: &IrcMessage) {
         let buffer = message.buffer_id;
-        let mut effects = Vec::new();
-        // Cold start: land where the activity is. Once a buffer has been
-        // active, a stray message never moves the user.
-        if self.active_buffer_id.is_none() && !self.ever_active {
-            self.active_buffer_id = Some(buffer);
-            self.ever_active = true;
-            effects.extend(self.active_updated(Some(buffer)));
-        }
         if Some(buffer) != self.active_buffer_id
             && !message.flags.contains(MessageFlags::SELF)
             && is_chat(message.kind)
@@ -517,7 +513,6 @@ impl App {
                     .is_some_and(|info| info.kind == BufferType::Query);
             self.mark_activity(buffer, highlight);
         }
-        effects
     }
 
     fn mark_activity(&mut self, buffer: BufferId, highlight: bool) {
@@ -683,7 +678,6 @@ impl App {
         // than exit and destroy the scrollback.
         self.presession_fatal = false;
         self.session_opened = false;
-        self.ever_active = false;
         vec![Effect::Reconnect]
     }
 
@@ -734,20 +728,35 @@ impl App {
     /// A send failed: give the text back and say why.
     pub fn send_failed(&mut self, text: String, error: &str) {
         tracing::warn!("send_input failed: {error}");
-        self.restore_input(text);
-        self.notify(&format!("Message not sent: {error}"), Severity::Warning);
+        // Submitted lines are in the input history, so one that can't go
+        // back in the input is still a press of Up away.
+        let hint = if self.restore_input(text) {
+            ""
+        } else {
+            " (Up recalls it)"
+        };
+        self.notify(
+            &format!("Message not sent: {error}{hint}"),
+            Severity::Warning,
+        );
     }
 
     /// Put text back in the input unless the user already typed something
     /// new. While disconnected it's stashed for the reconnect instead.
-    fn restore_input(&mut self, text: String) {
+    /// Returns whether it was put back (or stashed).
+    fn restore_input(&mut self, text: String) -> bool {
         if self.connection_lost {
-            self.pending_input.get_or_insert(text);
-            return;
+            if self.pending_input.is_some() {
+                return false;
+            }
+            self.pending_input = Some(text);
+            return true;
         }
-        if self.input.value.is_empty() {
-            self.input.set_value(text);
+        if !self.input.value.is_empty() {
+            return false;
         }
+        self.input.set_value(text);
+        true
     }
 
     /// Route a backlog reply to the request it answers (see
@@ -911,7 +920,7 @@ impl App {
     // -- nick completion --------------------------------------------------------
 
     /// Whether Tab completes a nick (typing) rather than switching modes.
-    pub fn completes_on_tab(&self) -> bool {
+    fn completes_on_tab(&self) -> bool {
         self.focus == Focus::Input && !self.input.disabled && !self.show_help
     }
 
@@ -1028,6 +1037,7 @@ impl App {
     /// double-click on a network (or its status buffer) connects or
     /// disconnects it, and on a channel joins or parts it.
     pub fn click_tree(&mut self, row: TreeRow, now: Instant) -> Vec<Effect> {
+        self.cancel_pending();
         let double = self.last_click.is_some_and(|(prev, at)| {
             prev == row && now.saturating_duration_since(at) <= DOUBLE_CLICK
         });
@@ -1119,11 +1129,13 @@ impl App {
     /// A click on scrollback line `line` (from the top of the view). It
     /// moves the cursor but never the marker; that stays on Enter.
     pub fn click_log(&mut self, line: usize) {
+        self.cancel_pending();
         self.focus = Focus::Log;
         self.log.click(&self.state, line);
     }
 
     pub fn scroll_log(&mut self, lines: isize) -> Vec<Effect> {
+        self.cancel_pending();
         self.log.scroll_lines(&self.state, lines);
         if lines < 0 {
             self.fetch_older_if_at_top()
@@ -1134,8 +1146,14 @@ impl App {
 
     // -- keys -------------------------------------------------------------------
 
-    pub fn on_paste(&mut self, text: &str) {
+    /// Mouse input or a paste ends a half-typed `yy` and a Tab completion.
+    fn cancel_pending(&mut self) {
+        self.pending_yank = false;
         self.completion = None;
+    }
+
+    pub fn on_paste(&mut self, text: &str) {
+        self.cancel_pending();
         if self.focus == Focus::Input && !self.input.disabled {
             let flat: String = text
                 .chars()
@@ -1148,9 +1166,12 @@ impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        // A `yy` only counts if nothing else happened in between.
+        let yank_started = std::mem::take(&mut self.pending_yank);
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.completes_on_tab() {
-            self.complete_nick([], key.code == KeyCode::BackTab);
-            return Vec::new();
+            return vec![Effect::CompleteNick {
+                backward: key.code == KeyCode::BackTab,
+            }];
         }
         // Any other key ends a Tab completion.
         self.completion = None;
@@ -1211,7 +1232,7 @@ impl App {
 
         match self.focus {
             Focus::Input => self.input_key(key, ctrl),
-            Focus::Log => self.normal_key(key),
+            Focus::Log => self.normal_key(key, yank_started),
         }
     }
 
@@ -1266,11 +1287,10 @@ impl App {
 
     /// Normal-mode keys: j/k walk the channel list, the arrows move
     /// within the current channel.
-    fn normal_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+    fn normal_key(&mut self, key: KeyEvent, yank_started: bool) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let half_page = (self.log.height as isize / 2).max(1);
-        let yank_started = std::mem::take(&mut self.pending_yank);
         let upward = !shift
             && match key.code {
                 KeyCode::Char('u' | 'y') => ctrl,

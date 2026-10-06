@@ -46,8 +46,7 @@ pub const NETWORK_REMOVED_SIGNAL: &[u8] = b"2networkRemoved(NetworkId)";
 pub const MAX_ROSTER_OBJECTS: usize = 200_000;
 
 /// Most networks and identities kept; real accounts have a handful.
-pub const MAX_NETWORKS: usize = 1_000;
-pub const MAX_IDENTITIES: usize = 1_000;
+pub use crate::protocol::messages::{MAX_IDENTITIES, MAX_NETWORKS};
 
 /// BufferSyncer slots that store a value per buffer id.
 const PER_BUFFER_SLOTS: [&[u8]; 4] = [
@@ -107,15 +106,14 @@ impl Dispatcher {
     pub fn seed_from_session(
         &mut self,
         state: &mut ClientState,
-        session: &SessionInit,
+        session: &Arc<SessionInit>,
         peer_features: Features,
         out: &mut Vec<ClientEvent>,
     ) {
-        state.session = Some(session.clone());
         state.peer_features = peer_features;
         state.backlog_requested.clear();
         out.push(ClientEvent::SessionOpened {
-            session: Arc::new(session.clone()),
+            session: Arc::clone(session),
             peer_features,
         });
 
@@ -128,6 +126,12 @@ impl Dispatcher {
         }
 
         for buf in &session.buffer_infos {
+            // On reconnect the state already holds buffers, some of which
+            // may not be in this session's list.
+            if state.buffers.len() >= MAX_BUFFERS && !state.buffers.contains_key(&buf.buffer_id) {
+                tracing::warn!("buffer cap reached; ignoring buffer {}", buf.buffer_id);
+                continue;
+            }
             state.buffers.insert(buf.buffer_id, buf.clone());
             state.messages.entry(buf.buffer_id).or_default();
             out.push(ClientEvent::BufferAdded {
@@ -430,10 +434,11 @@ impl Dispatcher {
             let Some(buffer_id) = i32_id(bid).map(BufferId) else {
                 continue;
             };
+            // Only buffers we know: a rename can't create one.
             if let Some(info) = state.buffers.get_mut(&buffer_id) {
                 info.name = name.clone();
+                out.push(ClientEvent::BufferRenamed { buffer_id, name });
             }
-            out.push(ClientEvent::BufferRenamed { buffer_id, name });
         }
         for (buffer_id, types, highlights) in activity {
             out.push(ClientEvent::BufferActivity {

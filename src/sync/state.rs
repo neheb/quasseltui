@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::protocol::features::Features;
-use crate::protocol::messages::SessionInit;
 use crate::protocol::types::{BufferId, BufferInfo, IdentityId, MsgId, NetworkId};
 use crate::sync::buffer_syncer::BufferSyncer;
 use crate::sync::events::IrcMessage;
@@ -21,11 +20,10 @@ pub const DEFAULT_MAX_MESSAGES_PER_BUFFER: usize = 5000;
 
 /// Most buffers kept. A message for a new buffer past this is dropped:
 /// with the per-buffer cap, this bounds history memory overall.
-pub const MAX_BUFFERS: usize = 10_000;
+pub use crate::protocol::messages::MAX_BUFFERS;
 
 #[derive(Debug, Clone)]
 pub struct ClientState {
-    pub session: Option<SessionInit>,
     pub peer_features: Features,
     pub networks: BTreeMap<NetworkId, Network>,
     pub buffers: BTreeMap<BufferId, BufferInfo>,
@@ -52,7 +50,6 @@ impl Default for ClientState {
 impl ClientState {
     pub fn new(max_messages_per_buffer: usize) -> Self {
         Self {
-            session: None,
             peer_features: Features::empty(),
             networks: BTreeMap::new(),
             buffers: BTreeMap::new(),
@@ -110,7 +107,6 @@ mod tests {
     #[test]
     fn defaults() {
         let state = ClientState::default();
-        assert!(state.session.is_none());
         assert!(state.networks.is_empty());
         assert_eq!(state.max_messages_per_buffer, 5000);
         assert_eq!(state.total_message_count(), 0);

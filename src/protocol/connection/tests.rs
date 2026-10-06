@@ -332,7 +332,10 @@ async fn stalled_consumer_ends_the_session_with_a_diagnosis() {
     while let Some(event) = rx.recv().await {
         last = Some(event);
     }
-    let last = last.unwrap();
+    // The consumer was gone longer than the liveness timeout, so the
+    // runner left the disconnect with the handle instead of waiting.
+    assert!(matches!(last, Some(ProtocolEvent::Sync(_))), "{last:?}");
+    let last = handle.take_undelivered().unwrap();
     assert!(
         reason(&last).contains("stopped processing events"),
         "{}",

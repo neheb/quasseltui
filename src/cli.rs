@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -126,7 +126,7 @@ pub struct ConnectArgs {
     pub cafile: Option<String>,
     /// Seconds to wait for the TCP connect, and again for the protocol
     /// handshake after it (default: 10).
-    #[arg(long)]
+    #[arg(long, value_parser = config::parse_seconds)]
     pub connect_timeout: Option<f64>,
 }
 
@@ -165,7 +165,7 @@ pub struct StreamArgs {
     #[command(flatten)]
     pub login: LoginArgs,
     /// Seconds to stream events after handshake.
-    #[arg(long, default_value_t = 60.0)]
+    #[arg(long, default_value_t = 60.0, value_parser = config::parse_seconds)]
     pub duration: f64,
     /// Optional cap on how many events to print before exiting.
     #[arg(long)]
@@ -180,7 +180,7 @@ pub struct DumpArgs {
     #[command(flatten)]
     pub login: LoginArgs,
     /// Seconds to accumulate state before dumping.
-    #[arg(long, default_value_t = 30.0)]
+    #[arg(long, default_value_t = 30.0, value_parser = config::parse_seconds)]
     pub duration: f64,
     /// Maximum messages per buffer to print in the summary.
     #[arg(long, default_value_t = 5)]
@@ -211,6 +211,28 @@ impl Resolved {
 
     fn connect_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.connect_timeout)
+    }
+
+    /// How long each post-connect step (probe, TLS, handshake) may take,
+    /// matching the UI's handshake window.
+    fn handshake_timeout(&self) -> Duration {
+        self.connection_options("", "")
+            .effective_handshake_timeout()
+    }
+
+    /// Run one handshake step, failing if the core goes quiet.
+    async fn stalled<T>(
+        &self,
+        step: &str,
+        future: impl Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        let window = self.handshake_timeout();
+        tokio::time::timeout(window, future).await.unwrap_or_else(|_| {
+            Err(Error::Handshake(format!(
+                "core accepted the TCP connection but stalled during {step} (no reply within {}s)",
+                window.as_secs_f64()
+            )))
+        })
     }
 
     fn connection_options(&self, user: &str, password: &str) -> ConnectionOptions {
@@ -391,8 +413,11 @@ fn credentials(command: &str, resolved: &Resolved) -> Result<(String, String), E
         .password
         .clone()
         .filter(|p| !p.is_empty())
-        .or_else(|| std::env::var("QUASSEL_PASSWORD").ok())
-    {
+        .or_else(|| {
+            std::env::var("QUASSEL_PASSWORD")
+                .ok()
+                .filter(|p| !p.is_empty())
+        }) {
         Some(p) => p,
         None => match prompt_password(&format!("Password for {user}@{}: ", resolved.host)) {
             Ok(Some(p)) => p,
@@ -414,7 +439,7 @@ fn resolve_or_exit(
     args: &ConnectArgs,
     creds: Option<&CredentialArgs>,
 ) -> Result<Resolved, ExitCode> {
-    resolve_connection(args, creds, || config::load(None)).map_err(|message| {
+    resolve_connection(args, creds, load_config).map_err(|message| {
         eprintln!("{command}: {message}");
         ExitCode::from(1)
     })
@@ -469,14 +494,18 @@ fn init_logging(target: LogTarget, verbose: bool) {
 
 pub fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let normalized = match normalize_argv(argv, || config::load(None)) {
+    let normalized = match normalize_argv(argv, load_config) {
         Ok(argv) => argv,
         Err(e) => {
             eprintln!("quasseltui: config: {e}");
             return ExitCode::from(1);
         }
     };
-    let cli = Cli::parse_from(std::iter::once("quasseltui".to_string()).chain(normalized));
+    let cli = match Cli::try_parse_from(std::iter::once("quasseltui".to_string()).chain(normalized))
+    {
+        Ok(cli) => cli,
+        Err(e) => return usage_exit(&e),
+    };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -514,6 +543,40 @@ fn interruptible(
     })
 }
 
+/// The config file, read once per run: argv normalization, connection
+/// settings and display settings all share the first result.
+fn load_config() -> Result<Option<Config>, ConfigError> {
+    static CONFIG: OnceLock<Result<Option<Config>, ConfigError>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let cfg = config::load(None);
+            if let Ok(Some(cfg)) = &cfg
+                && let Some(warning) = cfg.permission_warning()
+            {
+                eprintln!("quasseltui: {warning}");
+            }
+            cfg
+        })
+        .clone()
+}
+
+/// Print clap's help, version or usage error. Usage errors exit 1, as
+/// documented: clap's own 2 would read as "connect failed".
+fn usage_exit(error: &clap::Error) -> ExitCode {
+    let _ = error.print();
+    if error.use_stderr() {
+        ExitCode::from(1)
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// `label: error` for stderr. Errors can carry core-supplied text, so
+/// control sequences in it are escaped.
+fn error_line(label: &str, error: &impl std::fmt::Display) -> String {
+    format!("{label}: {}", sanitize_terminal(&error.to_string()))
+}
+
 /// Print to stderr after the UI has run. The terminal may be gone (its
 /// window was closed), and `eprintln!` would panic on the failed write.
 fn report(message: &str) {
@@ -522,7 +585,7 @@ fn report(message: &str) {
 
 /// UI preferences from the config file.
 fn display_settings(command: &str) -> Result<DisplaySettings, ExitCode> {
-    match config::load(None) {
+    match load_config() {
         Ok(cfg) => Ok(DisplaySettings {
             hide_joins_parts: cfg.as_ref().is_some_and(|c| c.hide_joins_parts),
             hide_nick_changes: cfg.is_some_and(|c| c.hide_nick_changes),
@@ -658,7 +721,7 @@ async fn connect_and_probe(
     {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("connect: {e}");
+            eprintln!("{}", error_line("connect", &e));
             return Err(ExitCode::from(2));
         }
     };
@@ -668,19 +731,24 @@ async fn connect_and_probe(
     } else {
         ConnectionFeatures::ENCRYPTION
     };
-    let negotiated = match probe(&mut stream, offered).await {
+    let negotiated = match resolved
+        .stalled("the probe", probe(&mut stream, offered))
+        .await
+    {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("protocol: {e}");
+            eprintln!("{}", error_line("protocol", &e));
             return Err(ExitCode::from(4));
         }
     };
     print!("{}", negotiated_report(&negotiated));
     if negotiated.tls_required() {
-        match start_tls(stream, &resolved.host, &resolved.tls_options()).await {
+        let tls_options = resolved.tls_options();
+        let tls = start_tls(stream, &resolved.host, &tls_options);
+        match resolved.stalled("the TLS handshake", tls).await {
             Ok(tls) => stream = Box::new(tls),
             Err(e) => {
-                eprintln!("protocol: {e}");
+                eprintln!("{}", error_line("protocol", &e));
                 return Err(ExitCode::from(4));
             }
         }
@@ -711,7 +779,7 @@ async fn probe_only(args: ProbeArgs) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let code = async {
+    let exchange = async {
         send_client_init(&mut stream, &ClientInit::new(client_version(), BUILD_DATE)).await?;
         let reply = recv_handshake_message(&mut stream).await?;
         let code = match &reply {
@@ -724,12 +792,14 @@ async fn probe_only(args: ProbeArgs) -> ExitCode {
         };
         write_init_reply(&mut io::stdout(), &reply)?;
         Ok(code)
-    }
-    .await
-    .unwrap_or_else(|e| {
-        eprintln!("protocol: {e}");
-        4
-    });
+    };
+    let code = resolved
+        .stalled("init", exchange)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("{}", error_line("protocol", &e));
+            4
+        });
     close_stream(&mut stream).await;
     ExitCode::from(code)
 }
@@ -755,10 +825,11 @@ async fn login_only(args: LoginArgs) -> ExitCode {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let code = login_exchange(&mut stream, user, password)
+    let code = resolved
+        .stalled("login", login_exchange(&mut stream, user, password))
         .await
         .unwrap_or_else(|e| {
-            eprintln!("protocol: {e}");
+            eprintln!("{}", error_line("protocol", &e));
             4
         });
     close_stream(&mut stream).await;
@@ -799,7 +870,7 @@ async fn login_exchange(
     send_client_login(stream, &ClientLogin { user, password }).await?;
     match recv_handshake_message(stream).await {
         Err(Error::Auth(msg)) => {
-            eprintln!("login rejected: {msg}");
+            eprintln!("{}", error_line("login rejected", &msg));
             return Ok(7);
         }
         Err(e) => return Err(e),
@@ -951,14 +1022,13 @@ async fn stream_only(args: StreamArgs) -> ExitCode {
         }
         0
     };
-    let code =
-        match tokio::time::timeout(Duration::from_secs_f64(args.duration.max(0.0)), run).await {
-            Ok(code) => code,
-            Err(_) => {
-                println!("[duration={}s elapsed, stopping]", args.duration);
-                0
-            }
-        };
+    let code = match tokio::time::timeout(Duration::from_secs_f64(args.duration), run).await {
+        Ok(code) => code,
+        Err(_) => {
+            println!("[duration={}s elapsed, stopping]", args.duration);
+            0
+        }
+    };
     handle.close();
     // Let the connection finish closing, but don't hang on a stalled one.
     let _ = tokio::time::timeout(Duration::from_secs(3), async {
@@ -1073,7 +1143,7 @@ async fn dump_state(args: DumpArgs) -> ExitCode {
             }
         }
     };
-    let _ = tokio::time::timeout(Duration::from_secs_f64(args.duration.max(0.0)), run).await;
+    let _ = tokio::time::timeout(Duration::from_secs_f64(args.duration), run).await;
     client.close();
     // Let the connection finish closing (bounded) before printing.
     let _ = tokio::time::timeout(Duration::from_secs(3), async {

@@ -14,6 +14,7 @@
 //! The event stream always ends with `ClientEvent::Disconnected`.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
@@ -94,12 +95,15 @@ impl QuasselClient {
             self.finished = true;
         }
         event.or_else(|| {
-            // The connection task always sends a terminal event; this only
-            // covers a runtime shutting down underneath us.
-            Some(ProtocolEvent::Disconnected {
-                reason: "connection task ended".into(),
-                error: None,
-            })
+            // The connection task sends a terminal event unless we stopped
+            // reading for too long; then it left the event with the handle.
+            // Otherwise the runtime shut down underneath us.
+            self.handle
+                .take_undelivered()
+                .or(Some(ProtocolEvent::Disconnected {
+                    reason: "connection task ended".into(),
+                    error: None,
+                }))
         })
     }
 
@@ -115,11 +119,19 @@ impl QuasselClient {
                 peer_features,
                 ..
             } => {
+                let session = Arc::new(session);
                 self.dispatcher
                     .seed_from_session(state, &session, peer_features, &mut out);
-                self.networks_requested = Some(session.network_ids.iter().copied().collect());
+                // `from_map` already capped the list; request what was seeded.
+                let networks: Vec<NetworkId> = session
+                    .network_ids
+                    .iter()
+                    .copied()
+                    .filter(|nid| state.networks.contains_key(nid))
+                    .collect();
+                self.networks_requested = Some(networks.iter().copied().collect());
                 self.request_init(buffer_syncer::CLASS_NAME, "");
-                for nid in &session.network_ids {
+                for nid in &networks {
                     self.request_init(network::CLASS_NAME, &nid.to_string());
                 }
             }

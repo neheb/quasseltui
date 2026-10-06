@@ -282,3 +282,31 @@ fn stream_event_lines() {
         "-- disconnected: bye\\x1b\n"
     );
 }
+
+#[test]
+fn error_lines_escape_core_text() {
+    let auth = Error::Auth("bad\x1b]52;c;aGk=\x07password".into());
+    let line = error_line("login rejected", &auth);
+    assert!(!line.contains('\x1b') && !line.contains('\x07'), "{line:?}");
+    assert!(line.starts_with("login rejected: "));
+    let handshake = Error::Handshake("core says \x1b[2J".into());
+    assert!(!error_line("protocol", &handshake).contains('\x1b'));
+}
+
+#[test]
+fn second_flags_reject_what_duration_cant_hold() {
+    let parse = |flag: &str, value: &str| {
+        let mode = if flag == "--duration" {
+            "dump-state"
+        } else {
+            "probe-only"
+        };
+        Cli::try_parse_from(["quasseltui", mode, "--host", "h", flag, value])
+    };
+    for bad in ["-1", "inf", "NaN", "1e30", "soon"] {
+        assert!(parse("--connect-timeout", bad).is_err(), "{bad}");
+        assert!(parse("--duration", bad).is_err(), "{bad}");
+    }
+    assert!(parse("--connect-timeout", "2.5").is_ok());
+    assert!(parse("--duration", "0").is_ok());
+}

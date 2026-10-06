@@ -25,12 +25,12 @@ fn session(
     network_ids: &[i32],
     buffers: Vec<BufferInfo>,
     identities: Vec<VariantMap>,
-) -> SessionInit {
-    SessionInit {
+) -> Arc<SessionInit> {
+    Arc::new(SessionInit {
         identities,
         network_ids: network_ids.iter().map(|n| NetworkId(*n)).collect(),
         buffer_infos: buffers,
-    }
+    })
 }
 
 struct Harness {
@@ -123,12 +123,7 @@ fn mid(v: i64) -> Variant {
 fn empty_session_still_emits_session_opened() {
     let mut state = ClientState::default();
     let mut out = Vec::new();
-    Dispatcher::new().seed_from_session(
-        &mut state,
-        &SessionInit::default(),
-        Features::empty(),
-        &mut out,
-    );
+    Dispatcher::new().seed_from_session(&mut state, &Arc::default(), Features::empty(), &mut out);
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0], ClientEvent::SessionOpened { .. }));
     assert!(state.buffer_syncer.is_some());
@@ -490,6 +485,15 @@ fn buffer_syncer_lifecycle() {
     ));
     assert_eq!(h.state.buffers[&BufferId(11)].name, "#renamed");
     assert_eq!(h.state.buffers[&BufferId(11)].kind, BufferType::Channel);
+    // Renaming a buffer we don't have is ignored.
+    h.sync(
+        b"BufferSyncer",
+        "",
+        b"renameBuffer",
+        vec![bid(99), "#ghost".into()],
+    );
+    assert!(h.take().is_empty());
+    assert!(!h.state.buffers.contains_key(&BufferId(99)));
 
     h.sync(
         b"BufferSyncer",
@@ -928,6 +932,29 @@ fn buffer_activity_reported_on_init_and_sync() {
             },
         ]
     ));
+}
+
+#[test]
+fn reseed_respects_the_buffer_cap() {
+    // A reconnect keeps the old buffers; new ones in the session only fill
+    // what's left under the cap.
+    let mut h = Harness::new(&[1], vec![]);
+    for i in 0..MAX_BUFFERS as i32 {
+        let info = buffer(i, 1, BufferType::Channel, "#old");
+        h.state.buffers.insert(info.buffer_id, info);
+    }
+    let s = session(
+        &[1],
+        vec![
+            buffer(0, 1, BufferType::Channel, "#renamed"),
+            buffer(-1, 1, BufferType::Channel, "#new"),
+        ],
+        vec![],
+    );
+    Dispatcher::new().seed_from_session(&mut h.state, &s, Features::empty(), &mut Vec::new());
+    assert_eq!(h.state.buffers.len(), MAX_BUFFERS);
+    assert_eq!(h.state.buffers[&BufferId(0)].name, "#renamed");
+    assert!(!h.state.buffers.contains_key(&BufferId(-1)));
 }
 
 #[test]

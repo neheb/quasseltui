@@ -99,6 +99,24 @@ fn config_path_from(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsSt
     base.join("quasseltui").join("config.ini")
 }
 
+impl Config {
+    /// A warning when the file holds a password but other users can read
+    /// it (the help asks for mode 0600).
+    pub fn permission_warning(&self) -> Option<String> {
+        use std::os::unix::fs::PermissionsExt;
+        let has_password = self.servers.values().any(|s| s.password.is_some());
+        let mode = std::fs::metadata(&self.path).ok()?.permissions().mode();
+        (has_password && mode & 0o077 != 0).then(|| {
+            format!(
+                "warning: {} holds a password but is readable by other users \
+                 (mode {:o}); run chmod 600 on it",
+                self.path.display(),
+                mode & 0o777
+            )
+        })
+    }
+}
+
 /// Load the config at `path` (or the default path). `Ok(None)` when the
 /// file doesn't exist: that's the first-run case, not an error.
 pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
@@ -111,6 +129,16 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     let sections = parse_ini(&text).map_err(|e| ConfigError(format!("{shown}: {e}")))?;
 
     let defaults = sections.get("DEFAULT").cloned().unwrap_or_default();
+    // [DEFAULT] feeds the server sections, so it takes their keys. Check it
+    // here too: with no server sections a typo would otherwise pass.
+    for key in defaults.keys() {
+        if !ALLOWED_SERVER_KEYS.contains(&key.as_str()) {
+            return Err(ConfigError(format!(
+                "{shown}: [DEFAULT] unknown setting '{key}' (allowed: {})",
+                ALLOWED_SERVER_KEYS.join(", ")
+            )));
+        }
+    }
     let with_defaults = |values: &BTreeMap<String, String>| {
         let mut merged = defaults.clone();
         merged.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -231,17 +259,7 @@ fn parse_server(
         };
     let connect_timeout = match text("connect_timeout") {
         None => None,
-        Some(raw) => Some(
-            raw.parse::<f64>()
-                .ok()
-                .filter(|v| v.is_finite() && *v >= 0.0)
-                .ok_or_else(|| {
-                    field_error(
-                        "connect_timeout",
-                        format!("could not convert string to a timeout: '{raw}'"),
-                    )
-                })?,
-        ),
+        Some(raw) => Some(parse_seconds(&raw).map_err(|e| field_error("connect_timeout", e))?),
     };
     // Passwords aren't trimmed beyond what the INI format already does
     // (INI can't represent surrounding spaces anyway). Empty means "not
@@ -332,6 +350,16 @@ fn parse_ini(text: &str) -> Result<BTreeMap<String, BTreeMap<String, String>>, S
     Ok(sections)
 }
 
+/// A number of seconds that fits a `Duration`: finite, not negative, and
+/// not absurdly large (`Duration::from_secs_f64` panics otherwise).
+pub fn parse_seconds(raw: &str) -> Result<f64, String> {
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| *v >= 0.0 && std::time::Duration::try_from_secs_f64(*v).is_ok())
+        .ok_or_else(|| format!("could not convert string to a timeout: '{raw}'"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,6 +378,26 @@ mod tests {
     fn load_ok(body: &str) -> Config {
         let dir = tempfile::tempdir().unwrap();
         load(Some(&write(&dir, body))).unwrap().unwrap()
+    }
+
+    #[test]
+    fn readable_password_files_warn() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "[server:home]\nhost = x\npassword = hunter2\n");
+        let chmod = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+        chmod(0o644).unwrap();
+        let cfg = load(Some(&path)).unwrap().unwrap();
+        let warning = cfg.permission_warning().unwrap();
+        assert!(
+            warning.contains("644") && !warning.contains("hunter2"),
+            "{warning}"
+        );
+        chmod(0o600).unwrap();
+        assert!(cfg.permission_warning().is_none());
+        // No password, nothing to protect.
+        let cfg = load_ok("[server:home]\nhost = x\n");
+        assert!(cfg.permission_warning().is_none());
     }
 
     #[test]
@@ -406,10 +454,18 @@ mod tests {
         assert!(load_err("[servers:home]\nhost = x\n").contains("unknown section"));
         assert!(load_err("[server:]\nhost = x\n").contains("empty server name"));
         assert!(load_err("[server:home]\nhost = x\npasswrod = oops\n").contains("unknown setting"));
+        assert!(load_err("[DEFAULT]\nprot = 1\n").contains("[DEFAULT] unknown setting 'prot'"));
         assert!(load_err("[server:home]\nport = notanumber\n").contains("port"));
         assert!(load_err("[server:home]\nport = 70000\n").contains("port"));
         assert!(load_err("[server:home]\ntls = maybe\n").contains("tls"));
         assert!(load_err("[server:home]\nconnect_timeout = soon\n").contains("connect_timeout"));
+        for bad in ["-1", "inf", "NaN", "1e30"] {
+            assert!(
+                load_err(&format!("[server:home]\nconnect_timeout = {bad}\n"))
+                    .contains("connect_timeout"),
+                "{bad}"
+            );
+        }
         assert!(
             load_err("[quasseltui]\ndefault_server = ghost\n[server:home]\nhost = x\n")
                 .contains("default_server")

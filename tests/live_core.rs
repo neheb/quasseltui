@@ -52,7 +52,6 @@ async fn logs_in_and_receives_session_state() {
     // let InitData arrive, then check what we have.
     let _ = tokio::time::timeout(Duration::from_secs(5), run).await;
     assert!(opened, "the core never sent SessionInit");
-    assert!(state.session.is_some());
     assert!(state.buffer_syncer.is_some());
     for network in state.networks.values() {
         assert!(

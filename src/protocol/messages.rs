@@ -17,6 +17,14 @@ use crate::protocol::types::{BufferInfo, NetworkId};
 use crate::protocol::usertypes::UserValue;
 use crate::qt::variant::{Variant, VariantMap};
 
+/// Session limits. The core is untrusted, so `SessionInit` lists past
+/// these are cut off rather than allocated, seeded, and fanned out into
+/// one init request each. The dispatcher enforces the same caps on objects
+/// created later in the session.
+pub const MAX_NETWORKS: usize = 1_000;
+pub const MAX_IDENTITIES: usize = 1_000;
+pub const MAX_BUFFERS: usize = 10_000;
+
 pub const CLIENT_INIT: &str = "ClientInit";
 pub const CLIENT_INIT_ACK: &str = "ClientInitAck";
 pub const CLIENT_INIT_REJECT: &str = "ClientInitReject";
@@ -276,18 +284,38 @@ impl SessionInit {
                 )));
             }
         };
-        let identities = session_list(state, "Identities", "dict", |item| match item {
-            Variant::Map(m) | Variant::User(UserValue::Identity(m)) => Some(m.clone()),
-            _ => None,
-        })?;
-        let network_ids = session_list(state, "NetworkIds", "NetworkId", |item| match item {
-            Variant::User(UserValue::NetworkId(id)) => Some(*id),
-            _ => None,
-        })?;
-        let buffer_infos = session_list(state, "BufferInfos", "BufferInfo", |item| match item {
-            Variant::User(UserValue::BufferInfo(info)) => Some(info.clone()),
-            _ => None,
-        })?;
+        let identities = session_list(
+            state,
+            "Identities",
+            "dict",
+            MAX_IDENTITIES,
+            |item| match item {
+                Variant::Map(m) | Variant::User(UserValue::Identity(m)) => Some(m.clone()),
+                _ => None,
+            },
+        )?;
+        let network_ids =
+            session_list(
+                state,
+                "NetworkIds",
+                "NetworkId",
+                MAX_NETWORKS,
+                |item| match item {
+                    Variant::User(UserValue::NetworkId(id)) => Some(*id),
+                    _ => None,
+                },
+            )?;
+        let buffer_infos =
+            session_list(
+                state,
+                "BufferInfos",
+                "BufferInfo",
+                MAX_BUFFERS,
+                |item| match item {
+                    Variant::User(UserValue::BufferInfo(info)) => Some(info.clone()),
+                    _ => None,
+                },
+            )?;
         Ok(Self {
             identities,
             network_ids,
@@ -296,13 +324,15 @@ impl SessionInit {
     }
 }
 
-/// A typed list inside `SessionState`. Every element must match: a
-/// different shape means the core sends something we don't understand, and
-/// failing visibly beats silently dropping networks or buffers.
+/// A typed list inside `SessionState`, cut off after `limit` items. Every
+/// element kept must match: a different shape means the core sends
+/// something we don't understand, and failing visibly beats silently
+/// dropping networks or buffers.
 fn session_list<T>(
     state: &VariantMap,
     key: &str,
     expected: &str,
+    limit: usize,
     convert: impl Fn(&Variant) -> Option<T>,
 ) -> Result<Vec<T>> {
     let items = match state.get(key) {
@@ -315,8 +345,15 @@ fn session_list<T>(
             )));
         }
     };
+    if items.len() > limit {
+        tracing::warn!(
+            "SessionState field '{key}' has {} items; keeping the first {limit}",
+            items.len()
+        );
+    }
     items
         .iter()
+        .take(limit)
         .enumerate()
         .map(|(i, item)| {
             convert(item).ok_or_else(|| {
@@ -658,6 +695,53 @@ mod tests {
         assert!(
             bad("BufferInfos", Variant::Map(VariantMap::new()))
                 .contains("'BufferInfos'[0] expected BufferInfo")
+        );
+    }
+
+    #[test]
+    fn session_init_lists_are_capped() {
+        let ids = |n: usize| {
+            Variant::List(
+                (0..n)
+                    .map(|i| Variant::User(UserValue::NetworkId(NetworkId(i as i32))))
+                    .collect(),
+            )
+        };
+        let infos = Variant::List(
+            (0..MAX_BUFFERS + 3)
+                .map(|i| {
+                    Variant::User(UserValue::BufferInfo(BufferInfo {
+                        buffer_id: BufferId(i as i32),
+                        network_id: NetworkId(1),
+                        kind: BufferType::Channel,
+                        group_id: 0,
+                        name: String::new(),
+                    }))
+                })
+                .collect(),
+        );
+        let identities = Variant::List(vec![Variant::Map(VariantMap::new()); MAX_IDENTITIES + 3]);
+        let parsed = parse_handshake_message(&session(Variant::Map(map(vec![
+            ("Identities", identities),
+            ("NetworkIds", ids(MAX_NETWORKS + 3)),
+            ("BufferInfos", infos),
+        ]))))
+        .unwrap();
+        let HandshakeMessage::SessionInit(s) = parsed else {
+            panic!("expected SessionInit");
+        };
+        assert_eq!(s.identities.len(), MAX_IDENTITIES);
+        assert_eq!(s.network_ids.len(), MAX_NETWORKS);
+        assert_eq!(s.buffer_infos.len(), MAX_BUFFERS);
+        // Items past the cap aren't even type-checked.
+        let mut over = vec![Variant::User(UserValue::NetworkId(NetworkId(1))); MAX_NETWORKS];
+        over.push(Variant::Int(7));
+        assert!(
+            parse_handshake_message(&session(Variant::Map(map(vec![(
+                "NetworkIds",
+                Variant::List(over)
+            )]))))
+            .is_ok()
         );
     }
 

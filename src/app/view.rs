@@ -328,7 +328,9 @@ fn render_toasts(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let mut bottom = area.bottom().saturating_sub(1);
     for toast in app.toasts.iter().rev() {
         let text_width = usize::from(width - 2);
-        let lines = toast.text.width().div_ceil(text_width.max(1)).clamp(1, 4) as u16;
+        // Room for a full-length notice (MAX_REASON_LEN at 58 columns is
+        // 7 lines), plus slack for word wrapping.
+        let lines = toast.text.width().div_ceil(text_width.max(1)).clamp(1, 10) as u16;
         let height = lines + 2;
         if bottom < area.y + 1 + height {
             break;

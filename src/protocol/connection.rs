@@ -238,6 +238,8 @@ struct Outbound {
 struct Shared {
     state: Mutex<ConnState>,
     features: Mutex<Features>,
+    /// The terminal event, if the consumer was too stalled to take it.
+    undelivered: Mutex<Option<ProtocolEvent>>,
 }
 
 impl Shared {
@@ -304,6 +306,17 @@ impl ConnectionHandle {
             .map_err(|_| Error::ConnectionClosed("connection is closed".into()))
     }
 
+    /// The terminal `Disconnected` that couldn't be delivered because the
+    /// consumer stopped reading. Only set once the event stream has ended
+    /// without one.
+    pub fn take_undelivered(&self) -> Option<ProtocolEvent> {
+        self.shared
+            .undelivered
+            .lock()
+            .expect("undelivered lock")
+            .take()
+    }
+
     /// Ask the connection to shut down. The event stream then ends with a
     /// `Disconnected("client closed")` unless it had already ended.
     pub fn close(&self) {
@@ -338,6 +351,7 @@ impl QuasselConnection {
         let shared = Arc::new(Shared {
             state: Mutex::new(ConnState::Initial),
             features: Mutex::new(Features::empty()),
+            undelivered: Mutex::new(None),
         });
         let handle = ConnectionHandle {
             outbound: outbound_tx.clone(),
@@ -345,6 +359,7 @@ impl QuasselConnection {
             shutdown: Arc::new(shutdown_tx),
         };
         let terminal_sent = Arc::new(AtomicBool::new(false));
+        let liveness = self.options.liveness_timeout;
         let runner = Runner {
             options: self.options,
             connector: self.connector,
@@ -361,12 +376,11 @@ impl QuasselConnection {
                 shared.set_state(ConnState::Closed);
                 if !terminal_sent.swap(true, Ordering::SeqCst) {
                     let reason = format!("internal error in receive loop: {join_error}");
-                    let _ = events_tx
-                        .send(ProtocolEvent::Disconnected {
-                            error: Some(Arc::new(Error::Other(reason.clone()))),
-                            reason,
-                        })
-                        .await;
+                    let event = ProtocolEvent::Disconnected {
+                        error: Some(Arc::new(Error::Other(reason.clone()))),
+                        reason,
+                    };
+                    send_terminal(&shared, &events_tx, event, liveness).await;
                 }
             }
         });
@@ -381,6 +395,29 @@ struct Runner {
     events: mpsc::Sender<ProtocolEvent>,
     outbound_tx: mpsc::UnboundedSender<Outbound>,
     terminal_sent: Arc<AtomicBool>,
+}
+
+/// Deliver the terminal event, but don't wait forever on a consumer that
+/// stopped reading (often the very reason for the disconnect). On giving
+/// up the event is kept for [`ConnectionHandle::take_undelivered`], and our
+/// sender is dropped, so the consumer's `recv` ends once it catches up.
+async fn send_terminal(
+    shared: &Shared,
+    events: &mpsc::Sender<ProtocolEvent>,
+    event: ProtocolEvent,
+    limit: Duration,
+) {
+    let permit = match tokio::time::timeout(limit, events.reserve()).await {
+        Ok(Ok(permit)) => permit,
+        // Nobody is listening any more.
+        Ok(Err(_)) => return,
+        Err(_) => {
+            tracing::warn!("event consumer stalled; leaving the disconnect for it to collect");
+            *shared.undelivered.lock().expect("undelivered lock") = Some(event);
+            return;
+        }
+    };
+    permit.send(event);
 }
 
 /// Resolves when a close was requested. If every handle is gone nobody
@@ -408,13 +445,17 @@ impl Runner {
     async fn disconnect(&self, reason: String, error: Option<Error>) {
         self.shared.set_state(ConnState::Closed);
         if !self.terminal_sent.swap(true, Ordering::SeqCst) {
-            let _ = self
-                .events
-                .send(ProtocolEvent::Disconnected {
-                    reason,
-                    error: error.map(Arc::new),
-                })
-                .await;
+            let event = ProtocolEvent::Disconnected {
+                reason,
+                error: error.map(Arc::new),
+            };
+            send_terminal(
+                &self.shared,
+                &self.events,
+                event,
+                self.options.liveness_timeout,
+            )
+            .await;
         }
     }
 

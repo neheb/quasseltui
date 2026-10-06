@@ -144,18 +144,34 @@ fn existing_active_buffer_is_kept_and_refreshed_on_reopen() {
 }
 
 #[test]
-fn cold_start_message_lands_on_its_buffer_and_never_hijacks_later() {
+fn an_empty_session_lands_on_the_first_buffer_to_appear() {
+    // What the dispatcher sends: SessionOpened with no buffers, then
+    // BufferAdded ahead of the first message for it.
     let mut app = App::new(ClientState::new(0), true, true);
+    assert!(app.on_client_event(&opened()).is_empty());
+    assert_eq!(app.active_buffer_id, None);
     app.state
         .buffers
         .insert(BufferId(12), info(12, 1, BufferType::Query, "friend"));
-    let effects = deliver(&mut app, message(1, 12, MessageFlags::NONE));
+    let effects = app.on_client_event(&ClientEvent::BufferAdded {
+        buffer_id: BufferId(12),
+        network_id: NetworkId(1),
+        name: "friend".into(),
+        kind: BufferType::Query,
+    });
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
     assert_eq!(effects, [Effect::RequestBacklog(BufferId(12))]);
 
+    // Later buffers and their messages never move the user.
     app.state
         .buffers
         .insert(BufferId(11), info(11, 1, BufferType::Channel, "#b"));
+    app.on_client_event(&ClientEvent::BufferAdded {
+        buffer_id: BufferId(11),
+        network_id: NetworkId(1),
+        name: "#b".into(),
+        kind: BufferType::Channel,
+    });
     deliver(&mut app, message(2, 11, MessageFlags::NONE));
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
 }
@@ -387,10 +403,14 @@ fn send_failure_restores_text_and_notifies() {
     assert!(notice.starts_with("Message not sent:"));
     assert!(!notice.contains('\x1b'));
 
-    // Text the user already started typing is not overwritten.
+    assert!(!notice.contains("Up recalls"));
+
+    // Text the user already started typing is not overwritten; the notice
+    // says where the failed line went.
     app.input.set_value("new");
     app.send_failed("old".into(), "x");
     assert_eq!(app.input.value, "new");
+    assert!(app.notices.last().unwrap().contains("Up recalls it"));
 }
 
 #[test]
@@ -964,6 +984,13 @@ fn yy_copies_the_highlighted_message() {
     );
     // A third y starts over.
     assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+    // Global keys and the mouse in between cancel it too.
+    app.on_key(key(KeyCode::PageUp));
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+    app.scroll_log(1);
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+    app.click_log(0);
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
 }
 
 #[test]
@@ -1034,16 +1061,25 @@ fn tab_completion_without_a_member_list() {
     app.on_client_event(&opened());
     deliver(&mut app, said(1, 10, "carol"));
     typing(&mut app);
-    // Tab through on_key falls back to recent speakers and stays typing.
+    // Tab asks the runtime for the member list and stays typing.
     type_text(&mut app, "hi c");
-    app.on_key(key(KeyCode::Tab));
-    assert_eq!(app.input.value, "hi carol ");
+    assert_eq!(
+        app.on_key(key(KeyCode::Tab)),
+        [Effect::CompleteNick { backward: false }]
+    );
+    assert_eq!(
+        app.on_key(key(KeyCode::BackTab)),
+        [Effect::CompleteNick { backward: true }]
+    );
     assert_eq!(app.focus, Focus::Input);
+    // Without one (the demo), recent speakers still complete.
+    app.complete_nick([], false);
+    assert_eq!(app.input.value, "hi carol ");
     // A query completes to its peer.
     app.select_buffer(BufferId(12));
     app.on_key(ctrl('u'));
     type_text(&mut app, "fr");
-    app.on_key(key(KeyCode::Tab));
+    app.complete_nick([], false);
     assert_eq!(app.input.value, "friend: ");
 }
 

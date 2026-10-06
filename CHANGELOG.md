@@ -39,6 +39,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A hostile core can no longer bloat the session at startup.**
+  `SessionInit` lists are capped (networks, identities, buffers) before
+  they are seeded or turned into init requests.
+- **Core-supplied text in CLI errors is escaped**, so a login rejection or
+  handshake error can't send terminal control sequences.
+- **`--connect-timeout` and `--duration` reject values that can't be a
+  timeout** (negative, `inf`, `NaN`, huge) instead of panicking; the config
+  file's `connect_timeout` gets the same check.
+- **`probe-only` and `login-only` time out** on a core that stops answering
+  mid-handshake, like the UI does.
+- **`kill -INT` ends the UI cleanly**, restoring the terminal.
+- **An empty `QUASSEL_PASSWORD` prompts** instead of failing.
+- **A config file holding a password warns** when other users can read it,
+  and is read once per run. Unknown keys in `[DEFAULT]` are reported.
+- **Usage errors exit 1**, not clap's 2, which meant "connect failed".
+- **A failed send says where the line went** when it can't go back in the
+  input (Up recalls it). Long notices are no longer cut off at four lines.
+- **`yy` only copies when nothing happened between the two `y`s.**
+
 - **Busy channels no longer re-wrap the whole scrollback per line.** Each
   message is formatted and wrapped once, so a new line in a full channel
   costs about a tenth of what it did.

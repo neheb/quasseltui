@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use crossterm::cursor::Show;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEventKind, MouseButton, MouseEventKind,
+    EventStream, KeyEventKind, MouseButton, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -182,7 +182,7 @@ async fn event_loop(
             }
             Input::Terminal(Some(Err(e))) => return Err(e),
             Input::Terminal(Some(Ok(event))) => {
-                effects.extend(handle_terminal_event(app, &areas, client.as_ref(), event));
+                effects.extend(handle_terminal_event(app, &areas, event));
                 dirty = true;
             }
             Input::Protocol(None) => client_done = true,
@@ -236,6 +236,14 @@ async fn event_loop(
                 copy_to_clipboard(text);
                 continue;
             }
+            if let Effect::CompleteNick { backward } = effect {
+                let members = client
+                    .as_ref()
+                    .map(|c| channel_members(c, app))
+                    .unwrap_or_default();
+                app.complete_nick(members.iter().map(String::as_str), backward);
+                continue;
+            }
             if let Effect::Reconnect = effect {
                 if let Some(make) = factory {
                     if let Some(old) = client.take() {
@@ -269,25 +277,8 @@ fn channel_members(client: &QuasselClient, app: &App) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn handle_terminal_event(
-    app: &mut App,
-    areas: &Areas,
-    client: Option<&QuasselClient>,
-    event: Event,
-) -> Vec<Effect> {
+fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effect> {
     match event {
-        Event::Key(key)
-            if key.kind != KeyEventKind::Release
-                && matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
-                && app.completes_on_tab() =>
-        {
-            let members = client.map(|c| channel_members(c, app)).unwrap_or_default();
-            app.complete_nick(
-                members.iter().map(String::as_str),
-                key.code == KeyCode::BackTab,
-            );
-            Vec::new()
-        }
         Event::Key(key) if key.kind != KeyEventKind::Release => app.on_key(key),
         Event::Paste(text) => {
             app.on_paste(&text);
@@ -405,7 +396,7 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                     tracing::warn!("set_marker_line failed for buffer {buffer}: {e}");
                 }
             }
-            Effect::Reconnect | Effect::Copy(_) => {}
+            Effect::Reconnect | Effect::Copy(_) | Effect::CompleteNick { .. } => {}
         }
     });
 }
@@ -443,13 +434,19 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// SIGTERM and SIGHUP end the UI cleanly (restoring the terminal) instead
+/// SIGTERM, SIGHUP and SIGINT end the UI cleanly (restoring the terminal) instead
 /// of killing the process in raw mode.
 /// Yields the exit code to use (128 + signal number).
 fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<i32>> {
     use tokio::signal::unix::{SignalKind, signal};
     let (tx, rx) = mpsc::unbounded_channel();
-    for (kind, code) in [(SignalKind::terminate(), 143), (SignalKind::hangup(), 129)] {
+    // Ctrl+C in raw mode is a key, not SIGINT, but `kill -INT` still
+    // arrives as a signal.
+    for (kind, code) in [
+        (SignalKind::terminate(), 143),
+        (SignalKind::hangup(), 129),
+        (SignalKind::interrupt(), 130),
+    ] {
         let mut stream = signal(kind)?;
         let tx = tx.clone();
         tokio::spawn(async move {

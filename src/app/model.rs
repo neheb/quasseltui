@@ -1294,6 +1294,12 @@ impl App {
             KeyCode::Char('y') if yank_started => return self.yank(),
             KeyCode::Char('y') => self.pending_yank = true,
             KeyCode::Char('?') => self.show_help = true,
+            KeyCode::Char('q') => {
+                self.exit = Some(Exit {
+                    code: 0,
+                    message: None,
+                });
+            }
             KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter => {
                 if let (Some(buffer), Some(msg)) = (self.log.buffer, self.log.highlighted) {

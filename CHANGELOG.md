@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tab completes nicks** while typing: recent speakers first, then the
   rest of the channel; Tab again cycles, Shift+Tab goes back. A nick at
   the start of the line gets `: `. `Esc` (not `Tab`) leaves typing.
+- **`q` quits** in normal mode, like `Ctrl+Q`.
 - `hide_nick_changes = true` in the `[quasseltui]` config section hides
   nick changes from the scrollback, like `hide_joins_parts`.
 

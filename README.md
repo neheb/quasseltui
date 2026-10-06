@@ -94,7 +94,7 @@ while you're in it.
 
 | Key | Action |
 | --- | --- |
-| `Ctrl+Q` | Quit |
+| `Ctrl+Q` (or `q` in normal mode) | Quit |
 | `Ctrl+R` | Reconnect after a disconnect (history is kept; the gap is re-fetched) |
 | `Esc` | Switch between typing and normal mode (`Tab` also starts typing) |
 | `Tab` / `Shift+Tab` (typing) | Complete a nick; press again to cycle |

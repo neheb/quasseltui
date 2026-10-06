@@ -966,6 +966,19 @@ fn yy_copies_the_highlighted_message() {
     assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
 }
 
+#[test]
+fn q_quits_in_normal_mode_only() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    typing(&mut app);
+    type_text(&mut app, "q");
+    assert_eq!(app.input.value, "q");
+    assert!(app.exit.is_none());
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Char('q')));
+    assert_eq!(app.exit.as_ref().map(|e| e.code), Some(0));
+}
+
 fn said(id: i64, buffer: i32, nick: &str) -> IrcMessage {
     IrcMessage {
         sender: format!("{nick}!u@h"),

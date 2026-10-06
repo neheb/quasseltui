@@ -900,22 +900,14 @@ pub fn write_session_init(out: &mut impl Write, session: &SessionInit) -> io::Re
 }
 
 /// Map a terminal disconnect to the `login-only` exit codes.
-pub fn disconnect_exit_code(reason: &str, error: Option<&Error>) -> u8 {
-    if error.is_some_and(Error::is_auth) {
-        return 7;
-    }
-    if error.is_some_and(Error::is_transport) {
-        return 2;
-    }
-    let reason = reason.to_lowercase();
-    if reason.contains("tls") && reason.contains("plaintext") {
-        5
-    } else if reason.contains("not configured") {
-        6
-    } else if reason.contains("rejected clientinit") {
-        3
-    } else {
-        4
+pub fn disconnect_exit_code(error: Option<&Error>) -> u8 {
+    match error {
+        Some(Error::Transport(_)) => 2,
+        Some(Error::InitRejected(_)) => 3,
+        Some(Error::TlsDowngrade(_)) => 5,
+        Some(Error::NotConfigured(_)) => 6,
+        Some(Error::Auth(_)) => 7,
+        _ => 4,
     }
 }
 
@@ -939,8 +931,8 @@ async fn stream_only(args: StreamArgs) -> ExitCode {
         while let Some(event) = events.recv().await {
             write_stream_event(&mut io::stdout(), &event, verbose).ok();
             match &event {
-                ProtocolEvent::Disconnected { reason, error } => {
-                    return disconnect_exit_code(reason, error.as_deref());
+                ProtocolEvent::Disconnected { error, .. } => {
+                    return disconnect_exit_code(error.as_deref());
                 }
                 // The handshake banner isn't one of the streamed events
                 // that --max-events counts.
@@ -967,7 +959,11 @@ async fn stream_only(args: StreamArgs) -> ExitCode {
             }
         };
     handle.close();
-    while events.recv().await.is_some() {}
+    // Let the connection finish closing, but don't hang on a stalled one.
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        while events.recv().await.is_some() {}
+    })
+    .await;
     ExitCode::from(code)
 }
 
@@ -1086,7 +1082,7 @@ async fn dump_state(args: DumpArgs) -> ExitCode {
 
     let mut code = 0;
     if let Some((reason, error)) = &last_disconnect {
-        code = disconnect_exit_code(reason, error.as_deref());
+        code = disconnect_exit_code(error.as_deref());
         println!(
             "-- disconnected before duration elapsed: {}",
             sanitize_terminal(reason)

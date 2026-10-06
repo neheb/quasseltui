@@ -41,8 +41,10 @@ fn pairs(value: &Variant) -> Vec<(Variant, Variant)> {
             .map(|(k, v)| (Variant::String(k.clone()), v.clone()))
             .collect(),
         Variant::List(items) if items.len() % 2 == 0 => items
-            .chunks_exact(2)
-            .map(|pair| (pair[0].clone(), pair[1].clone()))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[k, v]| (k.clone(), v.clone()))
             .collect(),
         _ => Vec::new(),
     }

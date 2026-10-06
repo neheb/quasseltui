@@ -114,6 +114,10 @@ async fn tls_declined_aborts_before_client_init() {
     assert!(text.contains("tls") && text.contains("plaintext"), "{text}");
     assert!(text.contains("--no-tls"));
     assert!(!text.contains("tls=false"));
+    let ProtocolEvent::Disconnected { error, .. } = &events[0] else {
+        unreachable!()
+    };
+    assert!(matches!(error.as_deref(), Some(Error::TlsDowngrade(_))));
     assert_eq!(handle.state(), ConnState::Closed);
     // Nothing was written after the probe: no ClientInit, no credentials.
     assert!(fake.written.await.unwrap().is_empty());
@@ -154,6 +158,10 @@ async fn unconfigured_core_is_rejected() {
     let fake = fake_core(inbound(ack, login_ack(), &[]), false, false);
     let (events, _) = run(options(false), &fake).await;
     assert!(reason(&events[0]).contains("not configured"));
+    let ProtocolEvent::Disconnected { error, .. } = &events[0] else {
+        unreachable!()
+    };
+    assert!(matches!(error.as_deref(), Some(Error::NotConfigured(_))));
 }
 
 #[tokio::test]

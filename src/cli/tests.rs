@@ -173,27 +173,16 @@ fn cli_parses_and_help_mentions_config() {
 
 #[test]
 fn disconnect_exit_codes() {
-    assert_eq!(
-        disconnect_exit_code("auth rejected: x", Some(&Error::Auth("x".into()))),
-        7
-    );
-    assert_eq!(
-        disconnect_exit_code("handshake failed", Some(&Error::Transport("x".into()))),
-        2
-    );
-    assert_eq!(
-        disconnect_exit_code(
-            "core did not enable TLS ... plaintext",
-            Some(&Error::Probe("x".into()))
-        ),
-        5
-    );
-    assert_eq!(disconnect_exit_code("core is not configured", None), 6);
-    assert_eq!(
-        disconnect_exit_code("core rejected ClientInit: 'old'", None),
-        3
-    );
-    assert_eq!(disconnect_exit_code("frame read error", None), 4);
+    let code = |e: Error| disconnect_exit_code(Some(&e));
+    assert_eq!(code(Error::Auth("x".into())), 7);
+    assert_eq!(code(Error::Transport("x".into())), 2);
+    assert_eq!(code(Error::TlsDowngrade("x".into())), 5);
+    assert_eq!(code(Error::NotConfigured("x".into())), 6);
+    assert_eq!(code(Error::InitRejected("x".into())), 3);
+    // The wording no longer matters, only the kind.
+    assert_eq!(code(Error::Other("core is not configured".into())), 4);
+    assert_eq!(code(Error::Handshake("frame read error".into())), 4);
+    assert_eq!(disconnect_exit_code(None), 4);
 }
 
 #[test]

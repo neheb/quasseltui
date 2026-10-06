@@ -518,7 +518,7 @@ impl Runner {
         } else if opts.tls {
             // Fail closed: never send credentials over plaintext unless the
             // user explicitly opted out of TLS.
-            return Err(Error::Probe(
+            return Err(Error::TlsDowngrade(
                 "core did not enable TLS but we offered it; refusing to send credentials \
                  over plaintext (re-run with --no-tls, or set tls = false in the server \
                  config, only if you trust this network path)"
@@ -542,7 +542,7 @@ impl Runner {
         let ack = match recv_handshake_message(&mut stream).await? {
             HandshakeMessage::ClientInitAck(ack) => ack,
             HandshakeMessage::ClientInitReject { error } => {
-                return Err(Error::Handshake(format!(
+                return Err(Error::InitRejected(format!(
                     "core rejected ClientInit: '{error}'"
                 )));
             }
@@ -557,7 +557,7 @@ impl Runner {
             }
         };
         if !ack.configured {
-            return Err(Error::Handshake(
+            return Err(Error::NotConfigured(
                 "core is not configured (run quasselcore --setup first)".into(),
             ));
         }

@@ -387,6 +387,8 @@ fn buffer_syncer_lifecycle() {
             buffer(13, 1, BufferType::Channel, "#d"),
         ],
     );
+    h.state.read_markers.insert(BufferId(10), MsgId(5));
+    assert!(h.state.claim_backlog(BufferId(10)));
     h.sync(b"BufferSyncer", "", b"removeBuffer", vec![bid(10)]);
     assert!(matches!(
         &h.take()[..],
@@ -396,6 +398,8 @@ fn buffer_syncer_lifecycle() {
     ));
     assert!(!h.state.buffers.contains_key(&BufferId(10)));
     assert!(!h.state.messages.contains_key(&BufferId(10)));
+    assert!(!h.state.read_markers.contains_key(&BufferId(10)));
+    assert!(!h.state.backlog_requested.contains(&BufferId(10)));
     // A repeated removal is a no-op.
     h.sync(b"BufferSyncer", "", b"removeBuffer", vec![bid(10)]);
     assert!(h.take().is_empty());

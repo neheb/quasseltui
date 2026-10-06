@@ -341,6 +341,8 @@ impl Dispatcher {
             // no-op rather than a double event.
             if state.buffers.remove(&buffer_id).is_some() {
                 state.messages.remove(&buffer_id);
+                state.backlog_requested.remove(&buffer_id);
+                state.read_markers.remove(&buffer_id);
                 out.push(ClientEvent::BufferRemoved { buffer_id });
             }
         }

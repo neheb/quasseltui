@@ -38,6 +38,7 @@ use crate::util::text::sanitize_and_truncate;
 /// arbitrarily long error, and escaping control bytes can quadruple it.
 pub const MAX_REASON_LEN: usize = 400;
 const HISTORY_LIMIT: usize = 100;
+pub const MAX_NOTICES: usize = 100;
 /// Two clicks on the same sidebar row within this make a double-click.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const DEFAULT_PLACEHOLDER: &str = "Type a message and press Enter…";
@@ -251,7 +252,8 @@ pub struct App {
     pub active_buffer_id: Option<BufferId>,
     /// A mid-session disconnect happened; cleared by a reconnect.
     pub connection_lost: bool,
-    /// Every user-facing notice, sanitized. Toasts disappear; this doesn't.
+    /// Recent user-facing notices, sanitized, newest last. Toasts
+    /// disappear; these are kept up to [`MAX_NOTICES`].
     pub notices: Vec<String>,
     pub toasts: VecDeque<Toast>,
     pub buffer_activity: HashMap<BufferId, Activity>,
@@ -333,6 +335,10 @@ impl App {
     /// core text, so they are sanitized and length-bounded.
     pub fn notify(&mut self, message: &str, severity: Severity) {
         let safe = sanitize_and_truncate(message, MAX_REASON_LEN);
+        tracing::info!("notice: {safe}");
+        if self.notices.len() >= MAX_NOTICES {
+            self.notices.remove(0);
+        }
         self.notices.push(safe.clone());
         self.toasts.push_back(Toast {
             text: safe,

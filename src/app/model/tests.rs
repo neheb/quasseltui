@@ -944,3 +944,14 @@ fn starts_in_normal_mode() {
     app.reconnect();
     assert_eq!(app.focus, Focus::Log);
 }
+
+#[test]
+fn notices_are_capped() {
+    let mut app = live_app();
+    for i in 0..MAX_NOTICES + 5 {
+        app.notify(&format!("n{i}"), Severity::Info);
+    }
+    assert_eq!(app.notices.len(), MAX_NOTICES);
+    assert_eq!(app.notices[0], "n5");
+    assert_eq!(app.toasts.len(), 4);
+}

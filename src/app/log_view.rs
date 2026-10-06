@@ -10,11 +10,14 @@
 //! The anchor never sits on the marker or a date separator, so moving the
 //! marker can't drag the view.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use chrono::{Local, NaiveDate};
 use unicode_width::UnicodeWidthChar;
 
 use crate::app::format::{DisplaySettings, Segment, SegmentKind, format_message, local_time};
-use crate::client::ClientState;
+use crate::client::{ClientState, IrcMessage};
 use crate::protocol::types::{BufferId, MsgId};
 
 pub const MARKER_TEXT: &str = "── read up to here ──";
@@ -30,6 +33,19 @@ pub enum RowKey {
     Marker,
 }
 
+impl RowKey {
+    pub fn is_message(&self) -> bool {
+        matches!(self, Self::Message(_))
+    }
+
+    pub fn msg_id(&self) -> Option<MsgId> {
+        match self {
+            Self::Message(id) => Some(*id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
     pub key: RowKey,
@@ -38,14 +54,11 @@ pub struct Row {
 
 impl Row {
     pub fn is_message(&self) -> bool {
-        matches!(self.key, RowKey::Message(_))
+        self.key.is_message()
     }
 
     pub fn msg_id(&self) -> Option<MsgId> {
-        match self.key {
-            RowKey::Message(id) => Some(id),
-            _ => None,
-        }
+        self.key.msg_id()
     }
 }
 
@@ -62,42 +75,53 @@ pub fn build_rows(
     today: NaiveDate,
     settings: &DisplaySettings,
 ) -> Vec<Row> {
+    walk_rows(state, buffer, today, settings)
+        .into_iter()
+        .map(|(key, msg)| Row {
+            key,
+            segments: row_segments(key, msg),
+        })
+        .collect()
+}
+
+/// The row keys of [`build_rows`], each message row with its message.
+fn walk_rows<'a>(
+    state: &'a ClientState,
+    buffer: BufferId,
+    today: NaiveDate,
+    settings: &DisplaySettings,
+) -> Vec<(RowKey, Option<&'a IrcMessage>)> {
     let marker = state.read_markers.get(&buffer).copied();
     let mut rows = Vec::new();
     let mut previous_date = today;
     for msg in state.messages_for_buffer(buffer) {
         if !settings.shows(msg) {
             if marker == Some(msg.msg_id) {
-                rows.push(marker_row());
+                rows.push((RowKey::Marker, None));
             }
             continue;
         }
         let date = local_time(msg.timestamp).date_naive();
         if date != previous_date {
-            rows.push(Row {
-                key: RowKey::Date(date),
-                segments: vec![Segment {
-                    text: format!("── {} ──", date.format("%A, %Y-%m-%d")),
-                    kind: SegmentKind::Event,
-                }],
-            });
+            rows.push((RowKey::Date(date), None));
             previous_date = date;
         }
-        rows.push(Row {
-            key: RowKey::Message(msg.msg_id),
-            segments: format_message(msg),
-        });
+        rows.push((RowKey::Message(msg.msg_id), Some(msg)));
         if marker == Some(msg.msg_id) {
-            rows.push(marker_row());
+            rows.push((RowKey::Marker, None));
         }
     }
     rows
 }
 
-fn marker_row() -> Row {
-    Row {
-        key: RowKey::Marker,
-        segments: vec![Segment {
+fn row_segments(key: RowKey, msg: Option<&IrcMessage>) -> Vec<Segment> {
+    match (key, msg) {
+        (RowKey::Message(_), Some(msg)) => format_message(msg),
+        (RowKey::Date(date), _) => vec![Segment {
+            text: format!("── {} ──", date.format("%A, %Y-%m-%d")),
+            kind: SegmentKind::Event,
+        }],
+        _ => vec![Segment {
             text: MARKER_TEXT.into(),
             kind: SegmentKind::Prefix,
         }],
@@ -177,31 +201,79 @@ struct CacheKey {
     settings: DisplaySettings,
 }
 
+/// One wrapped line, shared between the layout and the per-message cache.
+type Line = Arc<[Segment]>;
+
+/// Wrapped lines of each message at one width. Messages never change, so a
+/// relayout (a new message, a moved marker) only formats and wraps the
+/// messages it hasn't seen.
+#[derive(Debug, Clone, Default)]
+struct WrapCache {
+    buffer: Option<BufferId>,
+    width: usize,
+    lines: HashMap<MsgId, Arc<[Line]>>,
+}
+
 /// The wrapped layout of one buffer at one width.
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
-    pub rows: Vec<Row>,
+    pub rows: Vec<RowKey>,
     /// Wrapped lines, each tagged with its row index.
-    pub lines: Vec<(usize, Vec<Segment>)>,
+    pub lines: Vec<(usize, Line)>,
     /// First line index of each row.
     pub row_start: Vec<usize>,
+    /// Row index of each message.
+    message_rows: HashMap<MsgId, usize>,
+}
+
+fn wrap_lines(segments: &[Segment], width: usize, indent: usize) -> Arc<[Line]> {
+    wrap_segments(segments, width, indent)
+        .into_iter()
+        .map(Line::from)
+        .collect()
 }
 
 impl Layout {
-    fn build(rows: Vec<Row>, width: usize) -> Self {
+    fn build(
+        rows: Vec<(RowKey, Option<&IrcMessage>)>,
+        buffer: BufferId,
+        width: usize,
+        cache: &mut WrapCache,
+    ) -> Self {
+        if cache.buffer != Some(buffer) || cache.width != width {
+            *cache = WrapCache {
+                buffer: Some(buffer),
+                width,
+                lines: HashMap::new(),
+            };
+        }
+        // Carry over only the messages still shown, so trimmed ones go.
+        let mut previous = std::mem::take(&mut cache.lines);
         let mut lines = Vec::new();
         let mut row_start = Vec::with_capacity(rows.len());
-        for (i, row) in rows.iter().enumerate() {
+        let mut message_rows = HashMap::new();
+        let mut keys = Vec::with_capacity(rows.len());
+        for (i, (key, msg)) in rows.into_iter().enumerate() {
             row_start.push(lines.len());
-            let indent = if row.is_message() { HANGING_INDENT } else { 0 };
-            for line in wrap_segments(&row.segments, width, indent) {
-                lines.push((i, line));
-            }
+            keys.push(key);
+            let wrapped = match key {
+                RowKey::Message(id) => {
+                    message_rows.insert(id, i);
+                    let wrapped = previous.remove(&id).unwrap_or_else(|| {
+                        wrap_lines(&row_segments(key, msg), width, HANGING_INDENT)
+                    });
+                    cache.lines.insert(id, wrapped.clone());
+                    wrapped
+                }
+                _ => wrap_lines(&row_segments(key, msg), width, 0),
+            };
+            lines.extend(wrapped.iter().map(|line| (i, line.clone())));
         }
         Self {
-            rows,
+            rows: keys,
             lines,
             row_start,
+            message_rows,
         }
     }
 
@@ -217,7 +289,7 @@ impl Layout {
     }
 
     fn row_of_message(&self, id: MsgId) -> Option<usize> {
-        self.rows.iter().position(|r| r.msg_id() == Some(id))
+        self.message_rows.get(&id).copied()
     }
 
     /// The first message row at or after `row`, else the nearest before.
@@ -246,6 +318,7 @@ pub struct LogView {
     pub height: u16,
     pub settings: DisplaySettings,
     cache: Option<(CacheKey, Layout)>,
+    wrapped: WrapCache,
 }
 
 impl Default for LogView {
@@ -259,6 +332,7 @@ impl Default for LogView {
             height: 20,
             settings: DisplaySettings::default(),
             cache: None,
+            wrapped: WrapCache::default(),
         }
     }
 }
@@ -306,8 +380,10 @@ impl LogView {
         let stale = !matches!(&self.cache, Some((k, _)) if *k == key);
         if stale {
             let layout = Layout::build(
-                build_rows(state, buffer, today, &self.settings),
+                walk_rows(state, buffer, today, &self.settings),
+                buffer,
                 usize::from(self.width),
+                &mut self.wrapped,
             );
             self.cache = Some((key, layout));
         }
@@ -388,7 +464,7 @@ impl LogView {
         self.layout(state)
             .rows
             .iter()
-            .filter_map(Row::msg_id)
+            .filter_map(RowKey::msg_id)
             .collect()
     }
 
@@ -489,7 +565,7 @@ impl LogView {
             .iter()
             .skip(top)
             .take(height)
-            .map(|(row, segments)| (layout.rows[*row].key, segments.clone()))
+            .map(|(row, segments)| (layout.rows[*row], segments.to_vec()))
             .collect()
     }
 }
@@ -806,5 +882,39 @@ mod tests {
         v.click(&state, 0);
         assert_eq!(v.highlighted, Some(MsgId(41)));
         assert!(state.read_markers.is_empty());
+    }
+
+    #[test]
+    fn wrapped_lines_are_cached_per_message_and_width() {
+        let mut state = state_with(1..=3);
+        let mut v = view(10);
+        v.layout(&state);
+        assert_eq!(v.wrapped.lines.len(), 3);
+        let first = v.wrapped.lines[&MsgId(1)].clone();
+        // A new message reuses the others' wrapped lines.
+        let now = Utc::now();
+        state
+            .messages
+            .get_mut(&BufferId(1))
+            .unwrap()
+            .push(message(4, 1, now, "four"));
+        v.layout(&state);
+        assert!(Arc::ptr_eq(&first, &v.wrapped.lines[&MsgId(1)]));
+        assert_eq!(v.layout(&state).row_of_message(MsgId(4)), Some(3));
+        // Trimmed messages leave the cache.
+        state.messages.get_mut(&BufferId(1)).unwrap().remove(0);
+        v.layout(&state);
+        assert!(!v.wrapped.lines.contains_key(&MsgId(1)));
+        // A new width rewraps everything.
+        let long = "word ".repeat(30);
+        state
+            .messages
+            .get_mut(&BufferId(1))
+            .unwrap()
+            .push(message(5, 1, now, &long));
+        let wide = v.layout(&state).total_lines();
+        v.set_viewport(30, 10);
+        assert!(v.layout(&state).total_lines() > wide);
+        assert_eq!(v.wrapped.width, 30);
     }
 }

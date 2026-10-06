@@ -1,8 +1,8 @@
 //! Error type shared by the protocol, sync, and client layers.
 //!
 //! The variants mirror the failure classes callers need to tell apart:
-//! the CLI maps `Auth` and `Transport` to distinct exit codes, and a
-//! reconnect policy must never retry on `Auth`.
+//! the CLI maps several of them to distinct exit codes, and a reconnect
+//! policy must never retry on `Auth`.
 
 use crate::qt::datastream::DecodeError;
 
@@ -17,6 +17,16 @@ pub enum Error {
     /// A handshake message was malformed or the core rejected us.
     #[error("{0}")]
     Handshake(String),
+    /// The core declined TLS after we offered it; we refuse to continue
+    /// over plaintext.
+    #[error("{0}")]
+    TlsDowngrade(String),
+    /// The core rejected our `ClientInit`.
+    #[error("{0}")]
+    InitRejected(String),
+    /// The core hasn't been set up yet.
+    #[error("{0}")]
+    NotConfigured(String),
     /// The core rejected our credentials. Never retried.
     #[error("{0}")]
     Auth(String),

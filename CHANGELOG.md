@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double-clicking a network or its `(status)` buffer connects or
   disconnects it. Channels you're not in are dimmed.
 
+### Fixed
+
+- **Busy channels no longer re-wrap the whole scrollback per line.** Each
+  message is formatted and wrapped once, so a new line in a full channel
+  costs about a tenth of what it did.
+- `stream-only` no longer hangs at exit if the connection stalls while
+  closing.
+- `login-only`/`stream-only`/`dump-state` exit codes now follow the kind of
+  error rather than the wording of its message.
+
 ## [0.10.0] - 2026-10-03
 
 ### Changed

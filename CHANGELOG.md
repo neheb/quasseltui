@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   initialization no longer copies the whole roster several times.
 - The theme file is checked off the UI thread, and the sidebar only builds
   the rows on screen.
+- `j`/`k` no longer stop working when the selected message is trimmed from
+  a full channel.
+- A core that answers with `FeatureList` but no `CoreFeatures` no longer
+  fails the handshake.
 
 ## [0.10.0] - 2026-10-03
 

@@ -503,7 +503,11 @@ impl LogView {
             .highlighted
             .and_then(|h| ids.iter().position(|id| *id == h));
         let target = match current {
+            // No cursor, or its message was trimmed away: start over where
+            // focusing would put it. The stale id must go first, or
+            // `on_focus` keeps it and the cursor never moves again.
             None => {
+                self.highlighted = None;
                 self.on_focus(state);
                 return;
             }
@@ -916,5 +920,21 @@ mod tests {
         v.set_viewport(30, 10);
         assert!(v.layout(&state).total_lines() > wide);
         assert_eq!(v.wrapped.width, 30);
+    }
+
+    #[test]
+    fn cursor_on_a_trimmed_message_moves_again() {
+        let mut state = state_with(1..=5);
+        let mut v = view(10);
+        v.highlight_first(&state);
+        assert_eq!(v.highlighted, Some(MsgId(1)));
+        // The cap trims the cursor's message.
+        state.messages.get_mut(&BufferId(1)).unwrap().drain(..2);
+        // The next move restarts the cursor at the newest message...
+        v.move_highlight(&state, 1);
+        assert_eq!(v.highlighted, Some(MsgId(5)));
+        // ...and from there it moves normally.
+        v.move_highlight(&state, -1);
+        assert_eq!(v.highlighted, Some(MsgId(4)));
     }
 }

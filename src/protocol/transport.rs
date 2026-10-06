@@ -150,7 +150,13 @@ pub async fn start_tls<S>(stream: S, host: &str, options: &TlsOptions) -> Result
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let connector = tokio_native_tls::TlsConnector::from(options.build_connector()?);
+    // Building the connector reads the CA file and sets up OpenSSL: blocking
+    // work that must not stall a runtime worker.
+    let build = options.clone();
+    let connector = tokio::task::spawn_blocking(move || build.build_connector())
+        .await
+        .map_err(|e| Error::Transport(format!("TLS setup failed: {e}")))??;
+    let connector = tokio_native_tls::TlsConnector::from(connector);
     let server_name = options.server_hostname.as_deref().unwrap_or(host);
     connector.connect(server_name, stream).await.map_err(|e| {
         let text = e.to_string();

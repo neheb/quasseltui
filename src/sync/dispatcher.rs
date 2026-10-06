@@ -5,8 +5,9 @@
 //! objectName)`. Networks must be known (from the session or
 //! `networkCreated`); IRC users and channels are created on first sight on
 //! a known network, up to [`MAX_ROSTER_OBJECTS`]; unknown classes are
-//! dropped. The core is untrusted input, so nothing it names grows state
-//! without bound. Networks, identities and the BufferSyncer
+//! dropped. The core is untrusted input, so everything it can create is
+//! capped: networks ([`MAX_NETWORKS`]), identities ([`MAX_IDENTITIES`]),
+//! roster objects, and buffers (`MAX_BUFFERS`). Networks, identities and the BufferSyncer
 //! live in `ClientState` (the UI reads them); IRC users and channels live
 //! here, since only the dispatcher needs them.
 //!
@@ -43,6 +44,10 @@ pub const NETWORK_REMOVED_SIGNAL: &[u8] = b"2networkRemoved(NetworkId)";
 /// beyond a real session (a user in dozens of large channels sees tens of
 /// thousands of nicks); past it, new ones are ignored.
 pub const MAX_ROSTER_OBJECTS: usize = 200_000;
+
+/// Most networks and identities kept; real accounts have a handful.
+pub const MAX_NETWORKS: usize = 1_000;
+pub const MAX_IDENTITIES: usize = 1_000;
 
 /// BufferSyncer slots that store a value per buffer id.
 const PER_BUFFER_SLOTS: [&[u8]; 4] = [
@@ -114,7 +119,7 @@ impl Dispatcher {
             peer_features,
         });
 
-        for nid in &session.network_ids {
+        for nid in session.network_ids.iter().take(MAX_NETWORKS) {
             state.networks.insert(*nid, Network::new(nid.to_string()));
             out.push(ClientEvent::NetworkAdded {
                 network_id: *nid,
@@ -146,6 +151,12 @@ impl Dispatcher {
             }) else {
                 continue;
             };
+            if state.identities.len() >= MAX_IDENTITIES
+                && !state.identities.contains_key(&IdentityId(id))
+            {
+                tracing::warn!("identity cap reached; ignoring identity {id}");
+                continue;
+            }
             let mut identity = Identity::new(id.to_string());
             identity.apply_init_data(raw);
             let name = identity.identity_name.clone();
@@ -190,12 +201,21 @@ impl Dispatcher {
         true
     }
 
-    fn identity_entry<'s>(state: &'s mut ClientState, object_name: &str) -> &'s mut Identity {
-        let iid = IdentityId(object_name.parse().unwrap_or(-1));
-        state
-            .identities
-            .entry(iid)
-            .or_insert_with(|| Identity::new(object_name))
+    fn identity_entry<'s>(
+        state: &'s mut ClientState,
+        object_name: &str,
+    ) -> Option<&'s mut Identity> {
+        let iid = IdentityId(object_name.parse().ok()?);
+        if state.identities.len() >= MAX_IDENTITIES && !state.identities.contains_key(&iid) {
+            tracing::warn!("identity cap reached; ignoring identity {object_name:?}");
+            return None;
+        }
+        Some(
+            state
+                .identities
+                .entry(iid)
+                .or_insert_with(|| Identity::new(object_name)),
+        )
     }
 
     fn channel_entry(&mut self, state: &ClientState, object_name: &str) -> Option<&mut IrcChannel> {
@@ -283,7 +303,9 @@ impl Dispatcher {
                 }
             }
             identity::CLASS_NAME => {
-                Self::identity_entry(state, &msg.object_name).handle_sync(slot, params)
+                if let Some(identity) = Self::identity_entry(state, &msg.object_name) {
+                    identity.handle_sync(slot, params);
+                }
             }
             buffer_syncer::CLASS_NAME => {
                 // Per-buffer state is only kept for buffers we know of.
@@ -513,7 +535,9 @@ impl Dispatcher {
                 });
             }
             identity::CLASS_NAME => {
-                let identity = Self::identity_entry(state, &msg.object_name);
+                let Some(identity) = Self::identity_entry(state, &msg.object_name) else {
+                    return;
+                };
                 identity.apply_init_data(&msg.init_data);
                 // Re-emitted on every (re-)init; consumers dedupe by id.
                 out.push(ClientEvent::IdentityAdded {
@@ -594,6 +618,10 @@ impl Dispatcher {
                     return;
                 };
                 if state.networks.contains_key(&nid) {
+                    return;
+                }
+                if state.networks.len() >= MAX_NETWORKS {
+                    tracing::warn!("network cap reached; ignoring networkCreated({nid})");
                     return;
                 }
                 // Name and state arrive via the InitData the client requests

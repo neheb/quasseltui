@@ -929,3 +929,19 @@ fn buffer_activity_reported_on_init_and_sync() {
         ]
     ));
 }
+
+#[test]
+fn networks_and_identities_are_capped() {
+    let mut h = Harness::new(&[], vec![]);
+    for i in 0..MAX_NETWORKS as i32 + 5 {
+        h.rpc(NETWORK_CREATED_SIGNAL, vec![Variant::Int(i)]);
+    }
+    assert_eq!(h.state.networks.len(), MAX_NETWORKS);
+    for i in 0..MAX_IDENTITIES + 5 {
+        h.init(b"Identity", &i.to_string(), VariantMap::new());
+    }
+    assert_eq!(h.state.identities.len(), MAX_IDENTITIES);
+    // Existing ones still update at the cap.
+    h.init(b"Identity", "0", map(vec![("identityName", "home".into())]));
+    assert_eq!(h.state.identities[&IdentityId(0)].identity_name, "home");
+}

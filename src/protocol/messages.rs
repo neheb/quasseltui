@@ -41,11 +41,6 @@ fn wrong_type(key: &str, expected: &str, got: &Variant) -> Error {
     ))
 }
 
-fn require_int(data: &VariantMap, key: &str) -> Result<i64> {
-    let value = data.get(key).ok_or_else(|| missing(key))?;
-    value.as_i64().ok_or_else(|| wrong_type(key, "int", value))
-}
-
 fn require_bool(data: &VariantMap, key: &str) -> Result<bool> {
     match data.get(key) {
         None => Err(missing(key)),
@@ -203,14 +198,17 @@ pub struct ClientInitAck {
 impl ClientInitAck {
     pub fn from_map(data: &VariantMap) -> Result<Self> {
         Ok(Self {
+            // Cores that speak the extended protocol may send FeatureList
+            // instead of CoreFeatures, so it is optional (an empty bitmask).
             // A negative or oversized value must fail, not wrap into a bit
             // pattern that selects the wrong feature tier.
-            core_features: u32::try_from(require_int(data, "CoreFeatures")?).map_err(|_| {
-                Error::Handshake(format!(
-                    "CoreFeatures out of range: {:?}",
-                    data.get("CoreFeatures")
-                ))
-            })?,
+            core_features: u32::try_from(optional_int(data, "CoreFeatures")?.unwrap_or(0))
+                .map_err(|_| {
+                    Error::Handshake(format!(
+                        "CoreFeatures out of range: {:?}",
+                        data.get("CoreFeatures")
+                    ))
+                })?,
             feature_list: optional_str_list(data, "FeatureList")?,
             configured: require_bool(data, "Configured")?,
             storage_backends: optional_map_list(data, "StorageBackends")?
@@ -486,15 +484,15 @@ mod tests {
 
     #[test]
     fn strict_ack_validation() {
-        let err = ClientInitAck::from_map(&map(vec![
+        // A FeatureList-only ack (no CoreFeatures) is valid.
+        let parsed = ClientInitAck::from_map(&map(vec![
             ("MsgType", "ClientInitAck".into()),
             ("Configured", Variant::Bool(true)),
+            ("FeatureList", Variant::StringList(vec!["LongTime".into()])),
         ]))
-        .unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("missing required field 'CoreFeatures'")
-        );
+        .unwrap();
+        assert_eq!(parsed.core_features, 0);
+        assert_eq!(parsed.feature_list, ["LongTime"]);
 
         for (overrides, needle) in [
             (

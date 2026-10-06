@@ -293,7 +293,8 @@ impl App {
             buffer_activity: HashMap::new(),
             input: InputBar::default(),
             log: LogView::default(),
-            focus: Focus::Input,
+            // Like vim: start in normal mode; `i` to type.
+            focus: Focus::Log,
             show_help: false,
             exit: None,
             live,
@@ -599,12 +600,13 @@ impl App {
         self.older_pending.clear();
         self.input.disabled = false;
         self.input.placeholder = DEFAULT_PLACEHOLDER.into();
+        // Back to typing only to finish a stashed draft.
         if let Some(text) = self.pending_input.take()
             && self.input.value.is_empty()
         {
             self.input.set_value(text);
+            self.focus = Focus::Input;
         }
-        self.focus = Focus::Input;
         self.notify("Reconnecting…", Severity::Info);
         // A still-down core must re-enter the disconnected state rather
         // than exit and destroy the scrollback.

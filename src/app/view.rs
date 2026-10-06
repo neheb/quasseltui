@@ -375,7 +375,7 @@ const HELP: &[(&str, &str)] = &[
     ),
     ("g / G", "Normal: first / last message"),
     ("Enter (normal)", "Place the read marker on that message"),
-    ("i", "Normal: back to typing"),
+    ("i", "Normal: start typing"),
     ("F1 or ?", "This help"),
 ];
 

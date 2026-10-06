@@ -91,6 +91,12 @@ fn alt(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::ALT)
 }
 
+/// Leave the starting normal mode for typing, with `i`.
+fn typing(app: &mut App) {
+    app.on_key(key(KeyCode::Char('i')));
+    assert_eq!(app.focus, Focus::Input);
+}
+
 fn type_text(app: &mut App, text: &str) {
     for c in text.chars() {
         app.on_key(key(KeyCode::Char(c)));
@@ -320,6 +326,7 @@ fn midsession_disconnect_disables_input_and_stashes_text() {
 fn reconnect_restores_input_and_relatches_on_failure() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     type_text(&mut app, "draft");
     app.on_client_event(&disconnected("gone"));
     assert_eq!(app.reconnect(), [Effect::Reconnect]);
@@ -327,6 +334,8 @@ fn reconnect_restores_input_and_relatches_on_failure() {
     assert!(!app.input.disabled);
     assert_eq!(app.input.value, "draft");
     assert_eq!(app.input.placeholder, DEFAULT_PLACEHOLDER);
+    // Back to typing to finish the draft.
+    assert_eq!(app.focus, Focus::Input);
 
     // The core is still down: back to the disconnected state, no exit.
     app.on_client_event(&disconnected("connection refused"));
@@ -353,6 +362,7 @@ fn reconnect_is_a_noop_when_connected_or_unsupported() {
 fn input_submit_sends_and_clears() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     type_text(&mut app, "hello");
     let effects = app.on_key(key(KeyCode::Enter));
     assert_eq!(
@@ -386,6 +396,7 @@ fn send_failure_restores_text_and_notifies() {
 #[test]
 fn line_before_active_buffer_is_restored_with_notice() {
     let mut app = App::new(ClientState::new(0), true, true);
+    typing(&mut app);
     type_text(&mut app, "too early");
     assert!(app.on_key(key(KeyCode::Enter)).is_empty());
     assert_eq!(app.input.value, "too early");
@@ -396,6 +407,7 @@ fn line_before_active_buffer_is_restored_with_notice() {
 fn whitespace_only_input_is_not_sent() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     type_text(&mut app, "   ");
     assert!(app.on_key(key(KeyCode::Enter)).is_empty());
     assert!(app.input.value.is_empty());
@@ -405,6 +417,7 @@ fn whitespace_only_input_is_not_sent() {
 #[test]
 fn demo_mode_never_sends() {
     let mut app = App::new(state(), false, false);
+    typing(&mut app);
     type_text(&mut app, "hi");
     assert!(app.on_key(key(KeyCode::Enter)).is_empty());
 }
@@ -413,6 +426,7 @@ fn demo_mode_never_sends() {
 fn empty_enter_moves_marker_to_latest() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     // Nothing to mark yet.
     assert!(app.on_key(key(KeyCode::Enter)).is_empty());
     assert!(app.state.read_markers.is_empty());
@@ -435,6 +449,8 @@ fn enter_in_log_places_marker_per_buffer() {
     for i in 1..=3 {
         deliver(&mut app, message(i, 10, MessageFlags::NONE));
     }
+    // Entering normal mode puts the cursor on the newest message.
+    typing(&mut app);
     app.on_key(key(KeyCode::Tab));
     assert_eq!(app.focus, Focus::Log);
     assert_eq!(app.log.highlighted, Some(MsgId(3)));
@@ -503,6 +519,7 @@ fn backlog_failure_releases_latch_and_notifies() {
 fn input_history_recall() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     for line in ["first", "second"] {
         type_text(&mut app, line);
         app.on_key(key(KeyCode::Enter));
@@ -523,6 +540,7 @@ fn input_history_recall() {
 #[test]
 fn input_editing_keys() {
     let mut app = live_app();
+    typing(&mut app);
     type_text(&mut app, "hello wörld");
     app.on_key(key(KeyCode::Left));
     app.on_key(key(KeyCode::Backspace));
@@ -595,6 +613,7 @@ fn aerc_style_normal_mode() {
 
     // Esc leaves typing; j/k and the arrows move within the channel
     // without typing anything.
+    typing(&mut app);
     type_text(&mut app, "draft");
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Log);
@@ -642,6 +661,7 @@ fn aerc_style_normal_mode() {
 fn letters_type_while_typing() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     type_text(&mut app, "jkJK");
     assert_eq!(app.input.value, "jkJK");
     assert_eq!(app.active_buffer_id, Some(BufferId(10)));
@@ -651,6 +671,7 @@ fn letters_type_while_typing() {
 fn clicking_a_buffer_switches_without_changing_mode() {
     let mut app = live_app();
     app.on_client_event(&opened());
+    typing(&mut app);
     app.click_tree(TreeRow::Buffer(BufferId(12)), Instant::now());
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
     assert_eq!(app.focus, Focus::Input);
@@ -777,6 +798,7 @@ fn hidden_joins_parts_dont_mark_activity_or_take_the_marker() {
         hide_joins_parts: true,
     });
     app.on_client_event(&opened());
+    typing(&mut app);
     deliver(&mut app, join(1, 11));
     assert!(app.buffer_activity.is_empty());
     deliver(&mut app, message(2, 11, MessageFlags::NONE));
@@ -905,4 +927,20 @@ fn failed_older_request_can_be_retried() {
     app.older_backlog_failed(BufferId(10), "boom");
     assert!(app.notices.last().unwrap().contains("older history"));
     assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
+}
+
+#[test]
+fn starts_in_normal_mode() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    assert_eq!(app.focus, Focus::Log);
+    // Keys navigate rather than type.
+    deliver(&mut app, message(1, 10, MessageFlags::NONE));
+    app.on_key(key(KeyCode::Char('J')));
+    assert_eq!(app.active_buffer_id, Some(BufferId(11)));
+    assert!(app.input.value.is_empty());
+    // Without a draft, a reconnect stays in normal mode.
+    app.on_client_event(&disconnected("gone"));
+    app.reconnect();
+    assert_eq!(app.focus, Focus::Log);
 }

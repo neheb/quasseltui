@@ -85,9 +85,10 @@ see them again.
 
 ## Keys
 
-quasseltui has two modes, like aerc or vim. You start out **typing**; `Esc`
-(or `Tab`) switches to **normal** mode, where single keys navigate. The input
-bar shows `NORMAL` while you're in it.
+quasseltui has two modes, like aerc or vim. You start out in **normal**
+mode, where single keys navigate; `i` (or `Esc` / `Tab`) switches to
+**typing**, and `Esc` / `Tab` switches back. The input bar shows `NORMAL`
+while you're in it.
 
 | Key | Action |
 | --- | --- |
@@ -103,7 +104,7 @@ bar shows `NORMAL` while you're in it.
 | `Ctrl+D` / `Ctrl+U` (normal) | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
 | `g` / `G` (normal) | First / last message |
 | `Enter` (normal) | Place the read marker on the selected message |
-| `i` (normal) | Back to typing |
+| `i` (normal) | Start typing |
 | Click a channel | Switch to it |
 | Double-click a channel | Join it, or part it if you're in it |
 | Double-click a network or its `(status)` | Connect or disconnect it |

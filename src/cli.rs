@@ -524,7 +524,8 @@ fn report(message: &str) {
 fn display_settings(command: &str) -> Result<DisplaySettings, ExitCode> {
     match config::load(None) {
         Ok(cfg) => Ok(DisplaySettings {
-            hide_joins_parts: cfg.is_some_and(|c| c.hide_joins_parts),
+            hide_joins_parts: cfg.as_ref().is_some_and(|c| c.hide_joins_parts),
+            hide_nick_changes: cfg.is_some_and(|c| c.hide_nick_changes),
         }),
         Err(e) => {
             eprintln!("{command}: config: {e}");

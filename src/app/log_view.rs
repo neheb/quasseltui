@@ -712,9 +712,11 @@ mod tests {
         let list = state.messages.get_mut(&BufferId(1)).unwrap();
         list[1].kind = MessageType::Join;
         list[2].kind = MessageType::Quit;
+        list[3].kind = MessageType::Nick;
         state.read_markers.insert(BufferId(1), MsgId(2));
         let settings = DisplaySettings {
             hide_joins_parts: true,
+            ..DisplaySettings::default()
         };
         let keys: Vec<_> = build_rows(&state, BufferId(1), Local::now().date_naive(), &settings)
             .into_iter()
@@ -736,6 +738,17 @@ mod tests {
             &DisplaySettings::default(),
         );
         assert_eq!(all.len(), 5);
+        // Nick changes are hidden on their own.
+        let settings = DisplaySettings {
+            hide_nick_changes: true,
+            ..DisplaySettings::default()
+        };
+        let keys: Vec<_> = build_rows(&state, BufferId(1), Local::now().date_naive(), &settings)
+            .into_iter()
+            .map(|r| r.key)
+            .collect();
+        assert!(!keys.contains(&RowKey::Message(MsgId(4))));
+        assert!(keys.contains(&RowKey::Message(MsgId(3))));
     }
 
     #[test]

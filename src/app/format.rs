@@ -85,19 +85,21 @@ pub fn is_chat(kind: MessageType) -> bool {
 pub struct DisplaySettings {
     /// Hide joins, parts, quits, and netsplit joins/quits.
     pub hide_joins_parts: bool,
+    /// Hide nick changes.
+    pub hide_nick_changes: bool,
 }
 
 impl DisplaySettings {
     pub fn shows(&self, msg: &IrcMessage) -> bool {
-        !(self.hide_joins_parts
-            && matches!(
-                msg.kind,
-                MessageType::Join
-                    | MessageType::Part
-                    | MessageType::Quit
-                    | MessageType::NetsplitJoin
-                    | MessageType::NetsplitQuit
-            ))
+        match msg.kind {
+            MessageType::Join
+            | MessageType::Part
+            | MessageType::Quit
+            | MessageType::NetsplitJoin
+            | MessageType::NetsplitQuit => !self.hide_joins_parts,
+            MessageType::Nick => !self.hide_nick_changes,
+            _ => true,
+        }
     }
 }
 

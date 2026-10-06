@@ -796,6 +796,7 @@ fn hidden_joins_parts_dont_mark_activity_or_take_the_marker() {
     let mut app = live_app();
     app.set_display(crate::app::format::DisplaySettings {
         hide_joins_parts: true,
+        ..DisplaySettings::default()
     });
     app.on_client_event(&opened());
     typing(&mut app);

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 const MAIN_SECTION: &str = "quasseltui";
 const SERVER_PREFIX: &str = "server:";
-const ALLOWED_MAIN_KEYS: [&str; 2] = ["default_server", "hide_joins_parts"];
+const ALLOWED_MAIN_KEYS: [&str; 3] = ["default_server", "hide_joins_parts", "hide_nick_changes"];
 const ALLOWED_SERVER_KEYS: [&str; 8] = [
     "cafile",
     "connect_timeout",
@@ -68,6 +68,8 @@ pub struct Config {
     pub default_server: Option<String>,
     /// Leave joins, parts, quits and netsplits out of the scrollback.
     pub hide_joins_parts: bool,
+    /// Leave nick changes out of the scrollback.
+    pub hide_nick_changes: bool,
     pub servers: BTreeMap<String, ServerConfig>,
 }
 
@@ -117,6 +119,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
 
     let mut default_server = None;
     let mut hide_joins_parts = false;
+    let mut hide_nick_changes = false;
     let mut servers = BTreeMap::new();
     for (section, values) in &sections {
         if section == "DEFAULT" {
@@ -141,13 +144,15 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
             if !value.is_empty() {
                 default_server = Some(value);
             }
-            if let Some(raw) = merged.get("hide_joins_parts") {
-                hide_joins_parts = parse_bool(raw)
-                    .map_err(|e| {
-                        ConfigError(format!("{shown}: [{MAIN_SECTION}] hide_joins_parts: {e}"))
-                    })?
-                    .unwrap_or(false);
-            }
+            let flag = |key: &str| -> Result<bool, ConfigError> {
+                merged.get(key).map_or(Ok(false), |raw| {
+                    parse_bool(raw)
+                        .map(|v| v.unwrap_or(false))
+                        .map_err(|e| ConfigError(format!("{shown}: [{MAIN_SECTION}] {key}: {e}")))
+                })
+            };
+            hide_joins_parts = flag("hide_joins_parts")?;
+            hide_nick_changes = flag("hide_nick_changes")?;
             continue;
         }
         let Some(rest) = section.strip_prefix(SERVER_PREFIX) else {
@@ -176,6 +181,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
         path,
         default_server,
         hide_joins_parts,
+        hide_nick_changes,
         servers,
     }))
 }
@@ -420,6 +426,15 @@ mod tests {
         assert!(load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_joins_parts);
         assert!(!load_ok("[quasseltui]\nhide_joins_parts = off\n").hide_joins_parts);
         assert!(load_err("[quasseltui]\nhide_joins_parts = maybe\n").contains("hide_joins_parts"));
+    }
+
+    #[test]
+    fn hide_nick_changes_option() {
+        assert!(!load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_nick_changes);
+        assert!(load_ok("[quasseltui]\nhide_nick_changes = true\n").hide_nick_changes);
+        assert!(
+            load_err("[quasseltui]\nhide_nick_changes = maybe\n").contains("hide_nick_changes")
+        );
         assert!(load_err("[quasseltui]\nhide_join_parts = true\n").contains("unknown setting"));
         // [DEFAULT] keys meant for servers don't trip the main-section check.
         assert!(

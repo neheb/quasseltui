@@ -45,6 +45,7 @@ Example:
 [quasseltui]
 default_server = home
 # hide_joins_parts = false  (true hides joins, parts, quits and netsplits)
+# hide_nick_changes = false  (true hides nick changes)
 
 [server:home]
 host = irc.example.com
@@ -80,8 +81,9 @@ Any command-line flag still overrides the corresponding config value.
 
 `hide_joins_parts = true` in `[quasseltui]` leaves joins, parts, quits, and
 netsplit joins/quits out of the scrollback. They also stop counting as
-unread activity. Nothing is discarded: turn the option off and restart to
-see them again.
+unread activity. `hide_nick_changes = true` does the same for nick
+changes. Nothing is discarded: turn the option off and restart to see them
+again.
 
 ## Keys
 

@@ -105,6 +105,8 @@ bar shows `NORMAL` while you're in it.
 | `Enter` (normal) | Place the read marker on the selected message |
 | `i` (normal) | Back to typing |
 | Click a channel | Switch to it |
+| Double-click a channel | Join it, or part it if you're in it |
+| Double-click a network or its `(status)` | Connect or disconnect it |
 | `F1` (or `?` in normal mode) | Show all keys |
 
 Scrolling or moving up past the oldest loaded message fetches the next 100

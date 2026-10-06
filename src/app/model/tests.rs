@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use std::time::{Duration, Instant};
+
 use chrono::Utc;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -649,9 +651,116 @@ fn letters_type_while_typing() {
 fn clicking_a_buffer_switches_without_changing_mode() {
     let mut app = live_app();
     app.on_client_event(&opened());
-    app.click_buffer(BufferId(12));
+    app.click_tree(TreeRow::Buffer(BufferId(12)), Instant::now());
     assert_eq!(app.active_buffer_id, Some(BufferId(12)));
     assert_eq!(app.focus, Focus::Input);
+}
+
+/// Two clicks on `row`, `gap` apart.
+fn double_click(app: &mut App, row: TreeRow, gap: Duration) -> Vec<Effect> {
+    let t = Instant::now();
+    let mut effects = app.click_tree(row, t);
+    effects.extend(app.click_tree(row, t + gap));
+    effects
+}
+
+fn connected_app() -> App {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    let net = app.state.networks.get_mut(&NetworkId(1)).unwrap();
+    net.is_connected = true;
+    net.network_name = "Libera".into();
+    net.channels.insert("#A".into());
+    app
+}
+
+#[test]
+fn double_clicking_a_channel_joins_or_parts() {
+    let mut app = connected_app();
+    let quick = Duration::from_millis(100);
+    // Joined (names match case-insensitively): part.
+    let effects = double_click(&mut app, TreeRow::Buffer(BufferId(10)), quick);
+    assert_eq!(
+        effects,
+        [Effect::SendCommand {
+            buffer: app.state.buffers[&BufferId(10)].clone(),
+            text: "/part #a".into(),
+        }]
+    );
+    // Not joined: switch to it, then join.
+    let effects = double_click(&mut app, TreeRow::Buffer(BufferId(11)), quick);
+    assert_eq!(app.active_buffer_id, Some(BufferId(11)));
+    assert!(matches!(
+        effects.last(),
+        Some(Effect::SendCommand { text, .. }) if text == "/join #b"
+    ));
+    // Too slow, or on different rows: no toggle.
+    let effects = double_click(
+        &mut app,
+        TreeRow::Buffer(BufferId(11)),
+        Duration::from_secs(1),
+    );
+    assert!(effects.is_empty());
+    let t = Instant::now();
+    app.click_tree(TreeRow::Buffer(BufferId(10)), t);
+    let effects = app.click_tree(TreeRow::Buffer(BufferId(11)), t);
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendCommand { .. }))
+    );
+    // Queries have nothing to toggle.
+    let effects = double_click(&mut app, TreeRow::Buffer(BufferId(12)), quick);
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendCommand { .. }))
+    );
+}
+
+#[test]
+fn double_clicking_a_network_connects_or_disconnects() {
+    let mut app = connected_app();
+    let quick = Duration::from_millis(100);
+    assert_eq!(
+        double_click(&mut app, TreeRow::Network(NetworkId(1)), quick),
+        [Effect::SetNetworkConnected {
+            network: NetworkId(1),
+            connect: false,
+        }]
+    );
+    // A third click starts a new pair.
+    assert!(
+        app.click_tree(TreeRow::Network(NetworkId(1)), Instant::now())
+            .is_empty()
+    );
+    let mut fresh = connected_app();
+    fresh
+        .state
+        .networks
+        .get_mut(&NetworkId(1))
+        .unwrap()
+        .is_connected = false;
+    // The status buffer acts for its network.
+    fresh
+        .state
+        .buffers
+        .insert(BufferId(9), info(9, 1, BufferType::Status, ""));
+    let effects = double_click(&mut fresh, TreeRow::Buffer(BufferId(9)), quick);
+    assert_eq!(
+        effects.last(),
+        Some(&Effect::SetNetworkConnected {
+            network: NetworkId(1),
+            connect: true,
+        })
+    );
+    // Can't join on a disconnected network.
+    let effects = double_click(&mut fresh, TreeRow::Buffer(BufferId(11)), quick);
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SendCommand { .. }))
+    );
 }
 
 fn join(id: i64, buffer: i32) -> IrcMessage {

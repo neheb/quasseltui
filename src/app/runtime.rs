@@ -35,6 +35,7 @@ pub type ClientFactory = Box<dyn Fn() -> QuasselClient + Send>;
 /// Failures of spawned requests, reported back to the app.
 enum Failure {
     Send { text: String, error: String },
+    Command { text: String, error: String },
     Backlog { buffer: BufferId, error: String },
     OlderBacklog { buffer: BufferId, error: String },
 }
@@ -203,6 +204,10 @@ async fn event_loop(
                 app.send_failed(text, &error);
                 dirty = true;
             }
+            Input::Outcome(Failure::Command { text, error }) => {
+                app.command_failed(&text, &error);
+                dirty = true;
+            }
             Input::Outcome(Failure::Backlog { buffer, error }) => {
                 app.backlog_failed(buffer, &error);
                 dirty = true;
@@ -261,8 +266,8 @@ fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effe
                     let tree = areas.tree.inner(Margin::new(1, 1));
                     if tree.contains(at) {
                         let line = usize::from(at.y - tree.y);
-                        if let Some(Some(buffer)) = areas.tree_rows.get(line) {
-                            return app.click_buffer(*buffer);
+                        if let Some(Some(row)) = areas.tree_rows.get(line) {
+                            return app.click_tree(*row, Instant::now());
                         }
                     } else if areas.log.contains(at) {
                         app.click_log(usize::from(at.y - areas.log.y));
@@ -289,6 +294,23 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                 if let Err(e) = handle.send_input(buffer, text.clone()).await {
                     let _ = outcomes.send(Failure::Send {
                         text,
+                        error: e.to_string(),
+                    });
+                }
+            }
+            Effect::SendCommand { buffer, text } => {
+                if let Err(e) = handle.send_input(buffer, text.clone()).await {
+                    let _ = outcomes.send(Failure::Command {
+                        text,
+                        error: e.to_string(),
+                    });
+                }
+            }
+            Effect::SetNetworkConnected { network, connect } => {
+                if let Err(e) = handle.set_network_connected(network, connect).await {
+                    let what = if connect { "Connect" } else { "Disconnect" };
+                    let _ = outcomes.send(Failure::Command {
+                        text: what.into(),
                         error: e.to_string(),
                     });
                 }

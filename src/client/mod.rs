@@ -253,6 +253,23 @@ impl ClientHandle {
             .await
     }
 
+    /// Ask the core to connect a network to IRC, or disconnect it.
+    pub async fn set_network_connected(&self, network_id: NetworkId, connect: bool) -> Result<()> {
+        let slot: &[u8] = if connect {
+            b"requestConnect"
+        } else {
+            b"requestDisconnect"
+        };
+        let sync = SignalProxyMessage::Sync(SyncMessage {
+            class_name: network::CLASS_NAME.to_vec(),
+            object_name: network_id.0.to_string(),
+            slot_name: slot.to_vec(),
+            params: Vec::new(),
+        });
+        self.send(sync, &format!("send {}", String::from_utf8_lossy(slot)))
+            .await
+    }
+
     async fn buffer_syncer_request(
         &self,
         slot: &[u8],

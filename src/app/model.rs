@@ -30,7 +30,7 @@ use crate::app::format::{
 };
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, IrcMessage};
-use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId};
+use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId, NetworkId};
 use crate::sync::events::ClientEvent;
 use crate::util::text::sanitize_and_truncate;
 
@@ -38,6 +38,8 @@ use crate::util::text::sanitize_and_truncate;
 /// arbitrarily long error, and escaping control bytes can quadruple it.
 pub const MAX_REASON_LEN: usize = 400;
 const HISTORY_LIMIT: usize = 100;
+/// Two clicks on the same sidebar row within this make a double-click.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 pub const DEFAULT_PLACEHOLDER: &str = "Type a message and press Enter…";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,13 @@ pub enum Activity {
     Highlight,
 }
 
+/// A clickable sidebar row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeRow {
+    Network(NetworkId),
+    Buffer(BufferId),
+}
+
 /// A request to the core, carried out by the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
@@ -90,6 +99,16 @@ pub enum Effect {
     RequestOlderBacklog {
         buffer: BufferId,
         before: MsgId,
+    },
+    /// A `/command` the user triggered by other means than typing it, so
+    /// a failure isn't put back in the input bar.
+    SendCommand {
+        buffer: BufferInfo,
+        text: String,
+    },
+    SetNetworkConnected {
+        network: NetworkId,
+        connect: bool,
     },
     SetLastSeen(BufferId, MsgId),
     SetMarkerLine(BufferId, MsgId),
@@ -253,6 +272,8 @@ pub struct App {
     pub(crate) older_pending: HashSet<BufferId>,
     /// Buffers whose history the core has no more of.
     history_start: HashSet<BufferId>,
+    /// The previous sidebar click, for double-click detection.
+    last_click: Option<(TreeRow, Instant)>,
     // Bridge state for the current connection attempt.
     ever_active: bool,
     session_opened: bool,
@@ -281,6 +302,7 @@ impl App {
             initial_pending: HashSet::new(),
             older_pending: HashSet::new(),
             history_start: HashSet::new(),
+            last_click: None,
             ever_active: false,
             session_opened: false,
             presession_fatal: true,
@@ -778,9 +800,96 @@ impl App {
 
     // -- mouse ------------------------------------------------------------------
 
-    /// A click on a sidebar buffer.
-    pub fn click_buffer(&mut self, buffer: BufferId) -> Vec<Effect> {
-        self.select_buffer(buffer)
+    /// A click on a sidebar row. A click on a buffer selects it; a
+    /// double-click on a network (or its status buffer) connects or
+    /// disconnects it, and on a channel joins or parts it.
+    pub fn click_tree(&mut self, row: TreeRow, now: Instant) -> Vec<Effect> {
+        let double = self.last_click.is_some_and(|(prev, at)| {
+            prev == row && now.saturating_duration_since(at) <= DOUBLE_CLICK
+        });
+        // A third click starts a new pair rather than toggling back.
+        self.last_click = if double { None } else { Some((row, now)) };
+        let mut effects = match row {
+            TreeRow::Buffer(buffer) => self.select_buffer(buffer),
+            TreeRow::Network(_) => Vec::new(),
+        };
+        if double {
+            effects.extend(self.toggle_row(row));
+        }
+        effects
+    }
+
+    fn toggle_row(&mut self, row: TreeRow) -> Vec<Effect> {
+        if !self.live || self.connection_lost {
+            return Vec::new();
+        }
+        let buffer = match row {
+            TreeRow::Network(network) => return self.toggle_network(network),
+            TreeRow::Buffer(id) => match self.state.buffers.get(&id) {
+                Some(info) => info.clone(),
+                None => return Vec::new(),
+            },
+        };
+        match buffer.kind {
+            BufferType::Status => self.toggle_network(buffer.network_id),
+            BufferType::Channel => {
+                let Some(network) = self.state.networks.get(&buffer.network_id) else {
+                    return Vec::new();
+                };
+                if !network.is_connected {
+                    self.notify(
+                        &format!("Can't join {}: network not connected", buffer.name),
+                        Severity::Warning,
+                    );
+                    return Vec::new();
+                }
+                let verb = if self.is_joined(&buffer) {
+                    "part"
+                } else {
+                    "join"
+                };
+                let text = format!("/{verb} {}", buffer.name);
+                vec![Effect::SendCommand { buffer, text }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn toggle_network(&mut self, network: NetworkId) -> Vec<Effect> {
+        let Some(net) = self.state.networks.get(&network) else {
+            return Vec::new();
+        };
+        let connect = !net.is_connected;
+        let name = if net.network_name.is_empty() {
+            format!("network {network}")
+        } else {
+            net.network_name.clone()
+        };
+        let verb = if connect {
+            "Connecting"
+        } else {
+            "Disconnecting"
+        };
+        self.notify(&format!("{verb} {name}"), Severity::Info);
+        vec![Effect::SetNetworkConnected { network, connect }]
+    }
+
+    /// Whether we're in a channel, per the core's channel list.
+    pub fn is_joined(&self, buffer: &BufferInfo) -> bool {
+        self.state
+            .networks
+            .get(&buffer.network_id)
+            .is_some_and(|net| {
+                net.channels
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(&buffer.name))
+            })
+    }
+
+    /// A `/command` sent from a click failed.
+    pub fn command_failed(&mut self, text: &str, error: &str) {
+        tracing::warn!("{text} failed: {error}");
+        self.notify(&format!("{text} failed: {error}"), Severity::Warning);
     }
 
     /// A click on scrollback line `line` (from the top of the view). It

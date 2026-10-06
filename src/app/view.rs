@@ -19,9 +19,9 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::format::{SegmentKind, buffer_label, ordered_buffers};
 use crate::app::log_view::RowKey;
-use crate::app::model::{Activity, App, Focus, Severity};
+use crate::app::model::{Activity, App, Focus, Severity, TreeRow};
 use crate::app::theme::Theme;
-use crate::protocol::types::BufferId;
+use crate::protocol::types::BufferType;
 use crate::util::text::sanitize_terminal;
 
 const SIDEBAR_WIDTH: u16 = 28;
@@ -30,9 +30,9 @@ const SIDEBAR_WIDTH: u16 = 28;
 #[derive(Debug, Clone, Default)]
 pub struct Areas {
     pub tree: Rect,
-    /// Buffer under each sidebar line (from the top of the tree's inner
-    /// area); `None` for network headers.
-    pub tree_rows: Vec<Option<BufferId>>,
+    /// Network or buffer under each sidebar line (from the top of the
+    /// tree's inner area).
+    pub tree_rows: Vec<Option<TreeRow>>,
     pub log: Rect,
     pub input: Rect,
 }
@@ -73,9 +73,9 @@ fn render_tree(
     app: &App,
     theme: &Theme,
     area: Rect,
-) -> Vec<Option<BufferId>> {
+) -> Vec<Option<TreeRow>> {
     let inner_width = usize::from(area.width.saturating_sub(2));
-    let mut lines: Vec<(Line<'static>, Option<BufferId>)> = Vec::new();
+    let mut lines: Vec<(Line<'static>, Option<TreeRow>)> = Vec::new();
     let buffers = ordered_buffers(&app.state);
     for (network_id, network) in &app.state.networks {
         let name = if network.network_name.is_empty() {
@@ -90,11 +90,17 @@ fn render_tree(
         };
         lines.push((
             Line::from(Span::styled(truncate(&name, inner_width), style)),
-            None,
+            Some(TreeRow::Network(*network_id)),
         ));
         for buf in buffers.iter().filter(|b| b.network_id == *network_id) {
             let label = format!("  {}", buffer_label(buf));
-            let mut style = Style::default();
+            // Channels we're not in are dimmed, like Quassel's own client.
+            let mut style =
+                if buf.kind == BufferType::Channel && app.is_live() && !app.is_joined(buf) {
+                    theme.muted_style()
+                } else {
+                    Style::default()
+                };
             match app.buffer_activity.get(&buf.buffer_id) {
                 Some(Activity::Highlight) => {
                     style = theme.fg(theme.highlight).add_modifier(Modifier::BOLD)
@@ -106,19 +112,22 @@ fn render_tree(
                 style = theme.accent_style();
             }
             let text = format!("{:<inner_width$}", truncate(&label, inner_width));
-            lines.push((Line::from(Span::styled(text, style)), Some(buf.buffer_id)));
+            lines.push((
+                Line::from(Span::styled(text, style)),
+                Some(TreeRow::Buffer(buf.buffer_id)),
+            ));
         }
     }
 
     // Keep the cursor (or the active buffer) on screen.
     let height = usize::from(area.height.saturating_sub(2));
-    let target = app.active_buffer_id;
+    let target = app.active_buffer_id.map(TreeRow::Buffer);
     let target_line = lines
         .iter()
-        .position(|(_, id)| id.is_some() && *id == target);
+        .position(|(_, row)| row.is_some() && *row == target);
     let offset = target_line.map_or(0, |line| (line + 1).saturating_sub(height));
 
-    let rows: Vec<Option<BufferId>> = lines.iter().skip(offset).map(|(_, id)| *id).collect();
+    let rows: Vec<Option<TreeRow>> = lines.iter().skip(offset).map(|(_, row)| *row).collect();
     let text: Vec<Line<'static>> = lines
         .into_iter()
         .skip(offset)
@@ -411,7 +420,7 @@ mod tests {
     use crate::app::demo::build_demo_state;
     use crate::client::{ClientState, IrcMessage};
     use crate::protocol::types::{
-        BufferInfo, BufferType, MessageFlags, MessageType, MsgId, NetworkId,
+        BufferId, BufferInfo, BufferType, MessageFlags, MessageType, MsgId, NetworkId,
     };
     use crate::sync::Network;
 
@@ -498,8 +507,8 @@ mod tests {
         terminal
             .draw(|frame| areas = render(frame, &mut app, &Theme::default()))
             .unwrap();
-        assert_eq!(areas.tree_rows[0], None);
-        assert_eq!(areas.tree_rows[1], Some(BufferId(10)));
-        assert_eq!(areas.tree_rows[2], Some(BufferId(11)));
+        assert_eq!(areas.tree_rows[0], Some(TreeRow::Network(NetworkId(1))));
+        assert_eq!(areas.tree_rows[1], Some(TreeRow::Buffer(BufferId(10))));
+        assert_eq!(areas.tree_rows[2], Some(TreeRow::Buffer(BufferId(11))));
     }
 }

@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lines (messages, notices, actions) count; joins, parts, quits and other
   events no longer mark a channel.
 
+### Added
+
+- **Double-click to join, part, connect and disconnect.** Double-clicking a
+  channel in the sidebar joins it, or parts it if you're in it;
+  double-clicking a network or its `(status)` buffer connects or
+  disconnects it. Channels you're not in are dimmed.
+
 ## [0.10.0] - 2026-10-03
 
 ### Changed

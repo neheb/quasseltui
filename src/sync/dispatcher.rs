@@ -316,15 +316,23 @@ impl Dispatcher {
         }
     }
 
-    /// Apply pending BufferSyncer removals and renames. Drains everything
-    /// after any BufferSyncer slot, so a rename followed by a remove emits
-    /// both, in order.
+    /// Apply pending BufferSyncer removals and renames, and report activity
+    /// changes. Drains everything after any BufferSyncer slot, so a rename
+    /// followed by a remove emits both, in order.
     fn drain_buffer_syncer(state: &mut ClientState, out: &mut Vec<ClientEvent>) {
         let Some(syncer) = state.buffer_syncer.as_mut() else {
             return;
         };
         let removed = std::mem::take(&mut syncer.removed_buffers);
         let renamed = std::mem::take(&mut syncer.renamed_buffers);
+        let activity: Vec<(BufferId, u32, i64)> = std::mem::take(&mut syncer.activity_changed)
+            .into_iter()
+            .filter_map(|bid| {
+                let types = syncer.activities.get(&bid).copied().unwrap_or(0);
+                let highlights = syncer.highlight_counts.get(&bid).copied().unwrap_or(0);
+                Some((BufferId(i32_id(bid)?), types, highlights))
+            })
+            .collect();
         for bid in removed {
             let Some(buffer_id) = i32_id(bid).map(BufferId) else {
                 continue;
@@ -344,6 +352,13 @@ impl Dispatcher {
                 info.name = name.clone();
             }
             out.push(ClientEvent::BufferRenamed { buffer_id, name });
+        }
+        for (buffer_id, types, highlights) in activity {
+            out.push(ClientEvent::BufferActivity {
+                buffer_id,
+                types,
+                highlights,
+            });
         }
     }
 
@@ -451,6 +466,7 @@ impl Dispatcher {
                             .or_insert(MsgId(mid));
                     }
                 }
+                Self::drain_buffer_syncer(state, out);
             }
             irc_channel::CLASS_NAME => self
                 .channel_entry(&msg.object_name)

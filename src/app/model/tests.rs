@@ -185,6 +185,71 @@ fn activity_marks_for_inactive_buffers() {
     assert!(!app.buffer_activity.contains_key(&BufferId(11)));
 }
 
+fn core_activity(buffer: i32, types: u32, highlights: i64) -> ClientEvent {
+    ClientEvent::BufferActivity {
+        buffer_id: BufferId(buffer),
+        types,
+        highlights,
+    }
+}
+
+#[test]
+fn core_activity_sets_and_clears_marks() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    let active = app.active_buffer_id.unwrap();
+    let plain = MessageType::Plain as u32;
+    let join = MessageType::Join as u32;
+    app.on_client_event(&core_activity(11, plain | join, 0));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(11)),
+        Some(&Activity::Message)
+    );
+    app.on_client_event(&core_activity(11, plain, 1));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(11)),
+        Some(&Activity::Highlight)
+    );
+    // Never lowered while unread...
+    app.on_client_event(&core_activity(11, plain, 0));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(11)),
+        Some(&Activity::Highlight)
+    );
+    // ...but cleared once read elsewhere.
+    app.on_client_event(&core_activity(11, 0, 0));
+    assert!(!app.buffer_activity.contains_key(&BufferId(11)));
+    // Queries are always attention-worthy; the active buffer never marks.
+    app.on_client_event(&core_activity(12, plain, 0));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(12)),
+        Some(&Activity::Highlight)
+    );
+    app.on_client_event(&core_activity(active.0, plain, 1));
+    assert!(!app.buffer_activity.contains_key(&active));
+}
+
+#[test]
+fn events_are_not_activity() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    let mut join = message(1, 11, MessageFlags::NONE);
+    join.kind = MessageType::Join;
+    deliver(&mut app, join);
+    let events = MessageType::Join as u32 | MessageType::Quit as u32 | MessageType::Mode as u32;
+    app.on_client_event(&core_activity(12, events, 0));
+    assert!(app.buffer_activity.is_empty());
+    // A notice or action is chat.
+    app.on_client_event(&core_activity(11, events | MessageType::Action as u32, 0));
+    assert_eq!(
+        app.buffer_activity.get(&BufferId(11)),
+        Some(&Activity::Message)
+    );
+    // Only events left since last seen: cleared.
+    app.on_client_event(&core_activity(11, events, 0));
+    assert!(!app.buffer_activity.contains_key(&BufferId(11)));
+}
+
 #[test]
 fn removing_the_active_buffer_repicks() {
     let mut app = live_app();

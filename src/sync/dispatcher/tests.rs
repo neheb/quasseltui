@@ -736,3 +736,67 @@ fn marker_lines_seed_without_clobbering_local_markers() {
     assert_eq!(h.state.read_markers[&BufferId(2)], MsgId(222));
     assert!(!h.state.read_markers.contains_key(&BufferId(3)));
 }
+
+#[test]
+fn buffer_activity_reported_on_init_and_sync() {
+    let mut h = Harness::new(&[1], vec![]);
+    h.init(
+        b"BufferSyncer",
+        "",
+        map(vec![
+            (
+                "Activities",
+                Variant::List(vec![bid(1), Variant::Int(0x1), bid(2), Variant::Int(0x20)]),
+            ),
+            (
+                "HighlightCounts",
+                Variant::List(vec![bid(1), Variant::Int(3)]),
+            ),
+        ]),
+    );
+    let events = h.take();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            ClientEvent::BufferActivity {
+                buffer_id: BufferId(1),
+                types: 0x1,
+                highlights: 3
+            },
+            ClientEvent::BufferActivity {
+                buffer_id: BufferId(2),
+                types: 0x20,
+                highlights: 0
+            },
+        ]
+    ));
+    // Another client read buffer 1.
+    h.sync(
+        b"BufferSyncer",
+        "",
+        b"setBufferActivity",
+        vec![bid(1), Variant::Int(0)],
+    );
+    h.sync(
+        b"BufferSyncer",
+        "",
+        b"setHighlightCount",
+        vec![bid(1), Variant::Int(0)],
+    );
+    let events = h.take();
+    assert!(matches!(
+        events.as_slice(),
+        [
+            ClientEvent::BufferActivity {
+                buffer_id: BufferId(1),
+                types: 0,
+                highlights: 3
+            },
+            ClientEvent::BufferActivity {
+                buffer_id: BufferId(1),
+                types: 0,
+                highlights: 0
+            },
+        ]
+    ));
+}

@@ -14,9 +14,10 @@
 //! - The active buffer is picked once at startup (where the activity is)
 //!   and afterwards only changes on the user's request, or when the active
 //!   buffer is removed.
-//! - Messages for other buffers mark them in the sidebar ("highlight" for
-//!   highlights and queries, sticky until visited); the user's own echoed
-//!   lines don't.
+//! - Chat lines (not joins, parts or other events) for other buffers mark
+//!   them in the sidebar ("highlight" for highlights and queries, sticky
+//!   until visited); the user's own echoed lines don't. On connect, and whenever another client reads a buffer,
+//!   the core's own unread state (0.13+) sets or clears the marks.
 //! - Read markers and read state round-trip through the core.
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,7 +25,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::app::format::{DisplaySettings, ordered_buffer_ids, pick_default_buffer};
+use crate::app::format::{
+    CHAT_TYPES, DisplaySettings, is_chat, ordered_buffer_ids, pick_default_buffer,
+};
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, IrcMessage};
 use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId};
@@ -69,7 +72,7 @@ pub enum Focus {
 }
 
 /// Unread level of a non-active buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Activity {
     Message,
     Highlight,
@@ -371,6 +374,14 @@ impl App {
                 self.session_ended(reason, fatal);
                 Vec::new()
             }
+            ClientEvent::BufferActivity {
+                buffer_id,
+                types,
+                highlights,
+            } => {
+                self.core_activity(*buffer_id, *types, *highlights);
+                Vec::new()
+            }
             ClientEvent::NetworkAdded { .. }
             | ClientEvent::NetworkUpdated { .. }
             | ClientEvent::NetworkRemoved { .. }
@@ -403,7 +414,7 @@ impl App {
         }
         if Some(buffer) != self.active_buffer_id
             && !message.flags.contains(MessageFlags::SELF)
-            && self.log.settings.shows(message)
+            && is_chat(message.kind)
         {
             let highlight = message.flags.contains(MessageFlags::HIGHLIGHT)
                 || self
@@ -428,6 +439,38 @@ impl App {
         let entry = self.buffer_activity.entry(buffer).or_insert(level);
         if *entry != Activity::Highlight {
             *entry = level;
+        }
+    }
+
+    /// Adopt the core's unread state for a buffer. No chat lines or
+    /// highlights since its last-seen message clears the mark; otherwise the mark is raised
+    /// to match but never lowered, so a local highlight stays sticky.
+    fn core_activity(&mut self, buffer: BufferId, types: u32, highlights: i64) {
+        let is_query = self
+            .state
+            .buffers
+            .get(&buffer)
+            .is_some_and(|info| info.kind == BufferType::Query);
+        let level = if highlights > 0 {
+            Some(Activity::Highlight)
+        } else if types & CHAT_TYPES != 0 {
+            Some(if is_query {
+                Activity::Highlight
+            } else {
+                Activity::Message
+            })
+        } else {
+            None
+        };
+        match level {
+            None => {
+                self.buffer_activity.remove(&buffer);
+            }
+            Some(level) if Some(buffer) != self.active_buffer_id => {
+                let entry = self.buffer_activity.entry(buffer).or_insert(level);
+                *entry = (*entry).max(level);
+            }
+            Some(_) => {}
         }
     }
 

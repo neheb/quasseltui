@@ -113,6 +113,15 @@ pub enum ClientEvent {
         identity_id: IdentityId,
         name: String,
     },
+    /// The core's unread state for a buffer: the `Message::Types` bits and
+    /// the number of highlights since its last-seen message. All zero means
+    /// the buffer was read (possibly by another client). Only cores with
+    /// `BufferActivitySync` (0.13+) send these.
+    BufferActivity {
+        buffer_id: BufferId,
+        types: u32,
+        highlights: i64,
+    },
     /// Terminal. `error` is set when an error ended the session.
     Disconnected {
         reason: String,
@@ -134,6 +143,7 @@ impl ClientEvent {
             Self::MessageReceived(_) => "MessageReceived",
             Self::BacklogReceived { .. } => "BacklogReceived",
             Self::IdentityAdded { .. } => "IdentityAdded",
+            Self::BufferActivity { .. } => "BufferActivity",
             Self::Disconnected { .. } => "Disconnected",
         }
     }

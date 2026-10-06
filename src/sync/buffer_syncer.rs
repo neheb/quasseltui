@@ -1,9 +1,10 @@
 //! `BufferSyncer`: the singleton (object name `""`) carrying per-buffer
-//! last-seen and marker-line state plus buffer lifecycle (remove, rename,
-//! merge).
+//! last-seen and marker-line state, unread activity, plus buffer lifecycle
+//! (remove, rename, merge).
 //!
-//! Lifecycle slots only record pending changes; the dispatcher drains them
-//! after every BufferSyncer slot, updates `ClientState`, and emits events.
+//! Lifecycle and activity slots only record pending changes; the dispatcher
+//! drains them after every BufferSyncer slot, updates `ClientState`, and
+//! emits events.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,14 @@ pub struct BufferSyncer {
     pub initialized: bool,
     pub last_seen_by_buffer: BTreeMap<i64, i64>,
     pub marker_lines_by_buffer: BTreeMap<i64, i64>,
+    /// `Message::Types` bits seen since each buffer's last-seen message,
+    /// as computed by the core (0.13+, `BufferActivitySync`).
+    pub activities: BTreeMap<i64, u32>,
+    /// Highlights since each buffer's last-seen message (core 0.13+).
+    pub highlight_counts: BTreeMap<i64, i64>,
+    /// Buffers whose activity or highlight count changed since the last
+    /// drain.
+    pub activity_changed: BTreeSet<i64>,
     /// Buffers removed (or merged away) since the last drain.
     pub removed_buffers: BTreeSet<i64>,
     /// Buffers renamed since the last drain, with their new names.
@@ -62,6 +71,22 @@ impl BufferSyncer {
                     self.marker_lines_by_buffer.insert(bid, mid);
                 }
             }
+            b"setBufferActivity" => {
+                if let Some([bid, types]) = two()
+                    && let (Some(bid), Some(types)) = (bid.coerce_i64(), types.coerce_i64())
+                {
+                    self.activities.insert(bid, types as u32);
+                    self.activity_changed.insert(bid);
+                }
+            }
+            b"setHighlightCount" => {
+                if let Some([bid, count]) = two()
+                    && let (Some(bid), Some(count)) = (bid.coerce_i64(), count.coerce_i64())
+                {
+                    self.highlight_counts.insert(bid, count);
+                    self.activity_changed.insert(bid);
+                }
+            }
             b"removeBuffer" => {
                 if let Some([bid]) = one()
                     && let Some(bid) = bid.coerce_i64()
@@ -94,6 +119,9 @@ impl BufferSyncer {
         self.removed_buffers.insert(bid);
         self.last_seen_by_buffer.remove(&bid);
         self.marker_lines_by_buffer.remove(&bid);
+        self.activities.remove(&bid);
+        self.highlight_counts.remove(&bid);
+        self.activity_changed.remove(&bid);
     }
 
     pub fn apply_init_data(&mut self, data: &VariantMap) {
@@ -104,6 +132,27 @@ impl BufferSyncer {
     }
 
     pub fn apply_init_field(&mut self, key: &str, value: &Variant) {
+        match key {
+            "Activities" => {
+                for (bid, types) in pairs(value) {
+                    if let (Some(bid), Some(types)) = (bid.coerce_i64(), types.coerce_i64()) {
+                        self.activities.insert(bid, types as u32);
+                        self.activity_changed.insert(bid);
+                    }
+                }
+                return;
+            }
+            "HighlightCounts" => {
+                for (bid, count) in pairs(value) {
+                    if let (Some(bid), Some(count)) = (bid.coerce_i64(), count.coerce_i64()) {
+                        self.highlight_counts.insert(bid, count);
+                        self.activity_changed.insert(bid);
+                    }
+                }
+                return;
+            }
+            _ => {}
+        }
         let target = match key {
             "LastSeenMsg" => &mut self.last_seen_by_buffer,
             "MarkerLines" => &mut self.marker_lines_by_buffer,
@@ -175,5 +224,32 @@ mod tests {
         // Odd-length lists are ignored.
         s.apply_init_field("MarkerLines", &Variant::List(vec![bid(9)]));
         assert!(!s.marker_lines_by_buffer.contains_key(&9));
+    }
+
+    #[test]
+    fn activity_slots_and_init() {
+        let mut s = BufferSyncer::new();
+        s.apply_init_field(
+            "Activities",
+            &Variant::List(vec![bid(1), Variant::Int(0x21), bid(2), Variant::Int(0)]),
+        );
+        s.apply_init_field(
+            "HighlightCounts",
+            &Variant::List(vec![bid(1), Variant::Int(2)]),
+        );
+        assert_eq!(s.activities[&1], 0x21);
+        assert_eq!(s.highlight_counts[&1], 2);
+        assert_eq!(
+            s.activity_changed.iter().copied().collect::<Vec<_>>(),
+            [1, 2]
+        );
+        s.activity_changed.clear();
+        s.handle_sync(b"setBufferActivity", &[bid(3), Variant::Int(1)]);
+        s.handle_sync(b"setHighlightCount", &[bid(3), Variant::Int(1)]);
+        assert_eq!(s.activities[&3], 1);
+        assert_eq!(s.highlight_counts[&3], 1);
+        s.handle_sync(b"removeBuffer", &[bid(3)]);
+        assert!(!s.activities.contains_key(&3));
+        assert!(!s.activity_changed.contains(&3));
     }
 }

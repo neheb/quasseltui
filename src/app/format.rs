@@ -70,8 +70,17 @@ fn is_event(kind: MessageType) -> bool {
     )
 }
 
+/// Message types that count as unread activity: what people said, not
+/// joins, parts, mode changes and other events.
+pub const CHAT_TYPES: u32 =
+    MessageType::Plain as u32 | MessageType::Notice as u32 | MessageType::Action as u32;
+
+pub fn is_chat(kind: MessageType) -> bool {
+    kind as u32 & CHAT_TYPES != 0
+}
+
 /// What the scrollback shows. Hidden messages stay in the state; they are
-/// only left out of the display and don't count as unread activity.
+/// only left out of the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisplaySettings {
     /// Hide joins, parts, quits, and netsplit joins/quits.

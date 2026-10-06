@@ -381,6 +381,8 @@ const HELP: &[(&str, &str)] = &[
         "Normal: half a page (Ctrl+E / Ctrl+Y: a line)",
     ),
     ("g / G", "Normal: first / last message"),
+    ("yy", "Normal: copy the selected message"),
+    ("Shift+drag", "Select text with the mouse"),
     ("Enter (normal)", "Place the read marker on that message"),
     ("i", "Normal: start typing"),
     ("F1 or ?", "This help"),

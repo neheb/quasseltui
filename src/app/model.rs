@@ -26,7 +26,8 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::format::{
-    CHAT_TYPES, DisplaySettings, is_chat, ordered_buffer_ids, pick_default_buffer,
+    CHAT_TYPES, DisplaySettings, format_message_plain, is_chat, ordered_buffer_ids,
+    pick_default_buffer,
 };
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, IrcMessage};
@@ -119,6 +120,8 @@ pub enum Effect {
     SetMarkerLine(BufferId, MsgId),
     /// Replace the client with a fresh connection over the same state.
     Reconnect,
+    /// Put text on the system clipboard (via the terminal).
+    Copy(String),
 }
 
 /// How the app wants to exit.
@@ -282,6 +285,8 @@ pub struct App {
     history_start: HashSet<BufferId>,
     /// The previous sidebar click, for double-click detection.
     last_click: Option<(TreeRow, Instant)>,
+    /// The first `y` of a `yy` was pressed in normal mode.
+    pending_yank: bool,
     // Bridge state for the current connection attempt.
     ever_active: bool,
     session_opened: bool,
@@ -312,6 +317,7 @@ impl App {
             older_pending: HashMap::new(),
             history_start: HashSet::new(),
             last_click: None,
+            pending_yank: false,
             ever_active: false,
             session_opened: false,
             presession_fatal: true,
@@ -863,6 +869,27 @@ impl App {
         }
     }
 
+    /// `yy`: copy the highlighted message as it's shown.
+    fn yank(&mut self) -> Vec<Effect> {
+        let msg = self
+            .log
+            .buffer
+            .zip(self.log.highlighted)
+            .and_then(|(buffer, id)| {
+                self.state
+                    .messages
+                    .get(&buffer)?
+                    .iter()
+                    .rev()
+                    .find(|m| m.msg_id == id)
+            });
+        let Some(text) = msg.map(format_message_plain) else {
+            return Vec::new();
+        };
+        self.notify("Copied message", Severity::Info);
+        vec![Effect::Copy(text)]
+    }
+
     // -- mouse ------------------------------------------------------------------
 
     /// A click on a sidebar row. A click on a buffer selects it; a
@@ -1113,6 +1140,7 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let half_page = (self.log.height as isize / 2).max(1);
+        let yank_started = std::mem::take(&mut self.pending_yank);
         let upward = !shift
             && match key.code {
                 KeyCode::Char('u' | 'y') => ctrl,
@@ -1133,6 +1161,8 @@ impl App {
             KeyCode::Down => self.log.move_highlight(&self.state, 1),
             KeyCode::Home | KeyCode::Char('g') => self.log.highlight_first(&self.state),
             KeyCode::End | KeyCode::Char('G') => self.log.highlight_last(&self.state),
+            KeyCode::Char('y') if yank_started => return self.yank(),
+            KeyCode::Char('y') => self.pending_yank = true,
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter => {

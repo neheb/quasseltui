@@ -103,11 +103,13 @@ while you're in it.
 | `j` / `k` or `Shift+Down` / `Shift+Up` (normal) | Next / previous channel |
 | `Ctrl+D` / `Ctrl+U` (normal) | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |
 | `g` / `G` (normal) | First / last message |
+| `yy` (normal) | Copy the selected message to the clipboard (OSC 52) |
 | `Enter` (normal) | Place the read marker on the selected message |
 | `i` (normal) | Start typing |
 | Click a channel | Switch to it |
 | Double-click a channel | Join it, or part it if you're in it |
 | Double-click a network or its `(status)` | Connect or disconnect it |
+| `Shift`+drag | Select text with the terminal (quasseltui keeps the plain mouse for clicks and the wheel) |
 | `F1` (or `?` in normal mode) | Show all keys |
 
 Scrolling or moving up past the oldest loaded message fetches the next 100

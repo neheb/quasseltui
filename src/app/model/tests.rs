@@ -942,6 +942,30 @@ fn failed_older_request_can_be_retried() {
 }
 
 #[test]
+fn yy_copies_the_highlighted_message() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    for i in 1..=3 {
+        deliver(&mut app, message(i, 10, MessageFlags::NONE));
+    }
+    app.set_focus(Focus::Log);
+    app.on_key(key(KeyCode::Up));
+    let expected = format_message_plain(&app.state.messages[&BufferId(10)][1]);
+
+    // One y does nothing; another key in between cancels it.
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+    assert!(app.on_key(key(KeyCode::Char('G'))).is_empty());
+    app.on_key(key(KeyCode::Up));
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+    assert_eq!(
+        app.on_key(key(KeyCode::Char('y'))),
+        [Effect::Copy(expected)]
+    );
+    // A third y starts over.
+    assert!(app.on_key(key(KeyCode::Char('y'))).is_empty());
+}
+
+#[test]
 fn starts_in_normal_mode() {
     let mut app = live_app();
     app.on_client_event(&opened());

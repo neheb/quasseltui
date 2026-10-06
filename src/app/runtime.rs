@@ -232,6 +232,10 @@ async fn event_loop(
         }
 
         for effect in effects {
+            if let Effect::Copy(text) = &effect {
+                copy_to_clipboard(text);
+                continue;
+            }
             if let Effect::Reconnect = effect {
                 if let Some(make) = factory {
                     if let Some(old) = client.take() {
@@ -368,9 +372,42 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                     tracing::warn!("set_marker_line failed for buffer {buffer}: {e}");
                 }
             }
-            Effect::Reconnect => {}
+            Effect::Reconnect | Effect::Copy(_) => {}
         }
     });
+}
+
+/// Ask the terminal to put `text` on the clipboard (OSC 52). This works
+/// over SSH, and in tmux with `set-clipboard on`; terminals that don't
+/// support it ignore the sequence.
+fn copy_to_clipboard(text: &str) {
+    use std::io::Write;
+    let mut out = io::stdout();
+    let written =
+        write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes())).and_then(|()| out.flush());
+    if let Err(e) = written {
+        tracing::warn!("copy to clipboard failed: {e}");
+    }
+}
+
+/// Standard base64 with padding.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[(n >> (18 - 6 * i)) as usize & 63]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// SIGTERM and SIGHUP end the UI cleanly (restoring the terminal) instead
@@ -389,4 +426,19 @@ fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<i32>> {
         });
     }
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_pads() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64("é\u{1f600}".as_bytes()), "w6nwn5iA");
+    }
 }

@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   channel in the sidebar joins it, or parts it if you're in it;
   double-clicking a network or its `(status)` buffer connects or
   disconnects it. Channels you're not in are dimmed.
+- **`yy` copies the selected message** in normal mode, through the
+  terminal's clipboard support (OSC 52), so it also works over SSH. In
+  tmux it needs `set-clipboard on`. To select text with the mouse instead,
+  hold `Shift` while dragging.
 
 ### Fixed
 

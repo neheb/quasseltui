@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Starts where you left off**: the buffer active at exit is remembered
+  per account (in `~/.local/state/quasseltui/last-buffer`) and opened on
+  the next start, instead of the first network's status buffer.
 - **Alerts for highlights and private messages** that arrive out of sight:
   the terminal bell plus a desktop notification (OSC 777), at most every
   30 seconds per buffer. `notify = false` in `[quasseltui]` turns them off.

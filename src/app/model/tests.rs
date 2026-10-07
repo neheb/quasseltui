@@ -144,6 +144,23 @@ fn existing_active_buffer_is_kept_and_refreshed_on_reopen() {
 }
 
 #[test]
+fn starts_in_the_remembered_buffer_if_the_session_has_it() {
+    let mut app = live_app();
+    app.set_start_buffer(Some(BufferId(12)));
+    assert_eq!(
+        app.on_client_event(&opened()),
+        [Effect::RequestBacklog(BufferId(12))]
+    );
+    assert_eq!(app.active_buffer_id, Some(BufferId(12)));
+
+    // A buffer that's gone since falls back to the default.
+    let mut app = live_app();
+    app.set_start_buffer(Some(BufferId(99)));
+    app.on_client_event(&opened());
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+}
+
+#[test]
 fn an_empty_session_lands_on_the_first_buffer_to_appear() {
     // What the dispatcher sends: SessionOpened with no buffers, then
     // BufferAdded ahead of the first message for it.

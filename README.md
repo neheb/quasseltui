@@ -92,6 +92,10 @@ and asks the terminal for a desktop notification (OSC 777: foot, ghostty,
 wezterm, rxvt and others; other terminals ignore it). Each buffer alerts at
 most every 30 seconds. `notify = false` turns this off.
 
+quasseltui starts in the buffer you were last in on the same account. It
+keeps that in `$XDG_STATE_HOME/quasseltui/last-buffer` (by default
+`~/.local/state/quasseltui/last-buffer`).
+
 ## Keys
 
 quasseltui has two modes, like aerc or vim. You start out in **normal**

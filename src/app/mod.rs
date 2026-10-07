@@ -7,9 +7,11 @@
 //! - [`theme`] — terminal palette plus the Omarchy accent, live-reloaded.
 //! - [`runtime`] — the terminal event loop.
 //! - [`demo`] — offline placeholder state for `ui-demo`.
+//! - [`last_buffer`] — the buffer to start in, remembered across runs.
 
 pub mod demo;
 pub mod format;
+pub mod last_buffer;
 pub mod log_view;
 pub mod model;
 pub mod runtime;

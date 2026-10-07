@@ -103,12 +103,15 @@ fn restore_terminal() {
 const EVENT_BATCH: usize = 512;
 
 /// Run the UI until the user quits or a fatal error. With no factory the
-/// app runs offline (the demo).
+/// app runs offline (the demo). Starts in `start_buffer` when the session
+/// has it; returns the buffer that was active at the end, to start in next
+/// time.
 pub async fn run(
     state: ClientState,
     factory: Option<ClientFactory>,
     display: DisplaySettings,
-) -> io::Result<Exit> {
+    start_buffer: Option<BufferId>,
+) -> io::Result<(Exit, Option<BufferId>)> {
     // Set up the terminal before connecting: without one there is no point
     // opening a session.
     let mut terminal = init_terminal().map_err(|e| {
@@ -121,6 +124,7 @@ pub async fn run(
     let mut client = factory.as_ref().map(|make| make());
     let mut app = App::new(state, client.is_some(), factory.is_some());
     app.set_display(display);
+    app.set_start_buffer(start_buffer);
     let result = event_loop(&mut terminal, &mut app, &mut client, factory.as_ref()).await;
     restore_terminal();
 
@@ -133,7 +137,7 @@ pub async fn run(
         })
         .await;
     }
-    result
+    result.map(|exit| (exit, app.active_buffer_id))
 }
 
 async fn event_loop(

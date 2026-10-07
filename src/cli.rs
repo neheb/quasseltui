@@ -27,6 +27,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::app::demo::build_demo_state;
 use crate::app::format::DisplaySettings;
+use crate::app::last_buffer;
 use crate::client::{ClientState, QuasselClient};
 use crate::config::{self, Config, ConfigError};
 use crate::protocol::connection::{
@@ -603,8 +604,8 @@ async fn run_ui_demo() -> ExitCode {
         Ok(d) => d,
         Err(code) => return code,
     };
-    match crate::app::run(build_demo_state(), None, display).await {
-        Ok(exit) => ExitCode::from(exit.code as u8),
+    match crate::app::run(build_demo_state(), None, display, None).await {
+        Ok((exit, _)) => ExitCode::from(exit.code as u8),
         Err(e) => {
             report(&format!("ui-demo: terminal error: {e}"));
             ExitCode::from(1)
@@ -632,8 +633,14 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
     let options = resolved.connection_options(&user, &password);
     let factory: crate::app::ClientFactory =
         Box::new(move || QuasselClient::connect(options.clone()));
-    match crate::app::run(ClientState::default(), Some(factory), display).await {
-        Ok(exit) => {
+    let state_file = last_buffer::default_path();
+    let account = last_buffer::key(&user, &resolved.host, resolved.port);
+    let start = last_buffer::load(&state_file, &account);
+    match crate::app::run(ClientState::default(), Some(factory), display, start).await {
+        Ok((exit, active)) => {
+            if let Some(buffer) = active {
+                last_buffer::save(&state_file, &account, buffer);
+            }
             if let Some(message) = exit.message {
                 report(&message);
             }

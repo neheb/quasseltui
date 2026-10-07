@@ -11,8 +11,9 @@
 //!   connection (exit with the reason). After that it enters a visible
 //!   disconnected state: history stays on screen, the input is disabled,
 //!   and Ctrl+R reconnects over the same state.
-//! - The active buffer is picked once, when the session opens (the first
-//!   buffer, or the first that appears if there are none yet), and
+//! - The active buffer is picked once, when the session opens (the one
+//!   active at the last exit, else the first buffer, or the first that
+//!   appears if there are none yet), and
 //!   afterwards only changes on the user's request, or when the active
 //!   buffer is removed.
 //! - Chat lines (not joins, parts or other events) for other buffers mark
@@ -326,7 +327,9 @@ pub struct App {
     /// Whether the terminal window has focus, as far as it reports.
     terminal_focused: bool,
     /// When each buffer last raised an alert.
-    last_alert: HashMap<BufferId, Instant>,
+    pub(crate) last_alert: HashMap<BufferId, Instant>,
+    /// Where to land when the session opens, if it has this buffer.
+    start_buffer: Option<BufferId>,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     session_opened: bool,
@@ -363,6 +366,7 @@ impl App {
             retries: 0,
             terminal_focused: true,
             last_alert: HashMap::new(),
+            start_buffer: None,
             completion: None,
             session_opened: false,
             presession_fatal: true,
@@ -378,6 +382,11 @@ impl App {
     }
 
     /// Apply display preferences (from the config file).
+    /// Land in `buffer` when the session opens, instead of the default.
+    pub fn set_start_buffer(&mut self, buffer: Option<BufferId>) {
+        self.start_buffer = buffer;
+    }
+
     pub fn set_display(&mut self, settings: DisplaySettings) {
         self.log.settings = settings;
     }
@@ -526,9 +535,14 @@ impl App {
         if self.active_buffer_id.is_some() {
             return Vec::new();
         }
-        let Some(id) = pick_default_buffer(&self.state) else {
+        // Where the user left off last time, if this session has it.
+        let remembered = self
+            .start_buffer
+            .filter(|id| self.state.buffers.contains_key(id));
+        let Some(id) = remembered.or_else(|| pick_default_buffer(&self.state)) else {
             return Vec::new();
         };
+        self.start_buffer = None;
         self.active_buffer_id = Some(id);
         self.active_updated(Some(id))
     }

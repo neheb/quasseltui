@@ -95,7 +95,7 @@ while you're in it.
 | Key | Action |
 | --- | --- |
 | `Ctrl+Q` (or `q` in normal mode) | Quit |
-| `Ctrl+R` | Reconnect after a disconnect (history is kept; the gap is re-fetched) |
+| `Ctrl+R` | Reconnect now. After a disconnect quasseltui also retries on its own, backing off from 2s to once a minute; history is kept and the gap is re-fetched |
 | `Esc` | Switch between typing and normal mode (`Tab` also starts typing) |
 | `Tab` / `Shift+Tab` (typing) | Complete a nick; press again to cycle |
 | `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next channel, in either mode |

@@ -223,7 +223,11 @@ async fn event_loop(
                 theme = new_theme;
                 dirty = true;
             }
-            Input::Tick => dirty |= app.tick(Instant::now()),
+            Input::Tick => {
+                let now = Instant::now();
+                dirty |= app.tick(now);
+                effects.extend(app.retry_due(now));
+            }
             Input::Signal(code) => {
                 return Ok(Exit {
                     code,

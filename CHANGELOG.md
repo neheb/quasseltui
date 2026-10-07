@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Automatic reconnect.** After a disconnect quasseltui retries on its
+  own, waiting 2s, then 4s, 8s, and so on up to once a minute; the input
+  bar counts down, and `Ctrl+R` still reconnects right away. A rejected
+  password, an unconfigured core, or a TLS downgrade isn't retried. The
+  input comes back (with any half-typed draft) once the session opens.
 - **Double-click to join, part, connect and disconnect.** Double-clicking a
   channel in the sidebar joins it, or parts it if you're in it;
   double-clicking a network or its `(status)` buffer connects or

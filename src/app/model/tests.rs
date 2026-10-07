@@ -339,7 +339,7 @@ fn midsession_disconnect_disables_input_and_stashes_text() {
 }
 
 #[test]
-fn reconnect_restores_input_and_relatches_on_failure() {
+fn reconnect_restores_input_once_the_session_opens() {
     let mut app = live_app();
     app.on_client_event(&opened());
     typing(&mut app);
@@ -347,16 +347,88 @@ fn reconnect_restores_input_and_relatches_on_failure() {
     app.on_client_event(&disconnected("gone"));
     assert_eq!(app.reconnect(), [Effect::Reconnect]);
     assert!(!app.connection_lost);
-    assert!(!app.input.disabled);
-    assert_eq!(app.input.value, "draft");
-    assert_eq!(app.input.placeholder, DEFAULT_PLACEHOLDER);
-    // Back to typing to finish the draft.
-    assert_eq!(app.focus, Focus::Input);
+    // Still connecting: no typing yet, and the draft stays stashed.
+    assert!(app.input.disabled);
+    assert_eq!(app.input.placeholder, "Reconnecting…");
+    assert_eq!(app.focus, Focus::Log);
 
     // The core is still down: back to the disconnected state, no exit.
     app.on_client_event(&disconnected("connection refused"));
     assert!(app.exit.is_none());
     assert!(app.connection_lost);
+    assert!(app.input.placeholder.contains("connection refused"));
+
+    app.reconnect();
+    app.on_client_event(&opened());
+    assert!(!app.input.disabled);
+    assert_eq!(app.input.value, "draft");
+    assert_eq!(app.input.placeholder, DEFAULT_PLACEHOLDER);
+    // Back to typing to finish the draft.
+    assert_eq!(app.focus, Focus::Input);
+}
+
+#[test]
+fn reconnects_on_its_own_with_backoff() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    let start = Instant::now();
+    app.on_client_event(&disconnected("gone"));
+    assert!(app.input.placeholder.contains("retrying in 2s"));
+    assert!(app.retry_due(start).is_empty());
+    // The countdown moves, and is redrawn.
+    assert!(app.tick(start + Duration::from_millis(1100)));
+    assert!(app.input.placeholder.contains("retrying in 1s"));
+    let after = |secs| start + Duration::from_secs(secs);
+    assert_eq!(app.retry_due(after(3)), [Effect::Reconnect]);
+    assert!(app.retry_due(after(4)).is_empty(), "one attempt at a time");
+
+    // Each failure doubles the wait, quietly.
+    let toasts = app.notices.len();
+    app.on_client_event(&disconnected("refused"));
+    assert!(app.input.placeholder.contains("retrying in 4s"));
+    assert_eq!(app.notices.len(), toasts);
+    for expected in ["8s", "16s", "32s", "60s", "60s"] {
+        app.retry_due(after(3600));
+        app.on_client_event(&disconnected("refused"));
+        assert!(app.input.placeholder.contains(expected), "{expected}");
+    }
+
+    // A session resets the backoff; Ctrl+R still works while waiting.
+    app.retry_due(after(3600));
+    app.on_client_event(&opened());
+    app.on_client_event(&disconnected("gone again"));
+    assert!(app.input.placeholder.contains("retrying in 2s"));
+    assert_eq!(app.reconnect(), [Effect::Reconnect]);
+    assert!(app.retry_due(after(3600)).is_empty());
+}
+
+#[test]
+fn no_automatic_retry_when_it_cant_help() {
+    for error in [
+        Error::Auth("bad password".into()),
+        Error::NotConfigured("x".into()),
+        Error::TlsDowngrade("x".into()),
+        Error::InitRejected("x".into()),
+    ] {
+        let mut app = live_app();
+        app.on_client_event(&opened());
+        app.on_client_event(&ClientEvent::Disconnected {
+            reason: "rejected".into(),
+            error: Some(Arc::new(error)),
+        });
+        assert!(app.connection_lost);
+        assert!(app.input.placeholder.contains("Ctrl+R to reconnect"));
+        assert!(app.retry_due(Instant::now() + RETRY_MAX * 2).is_empty());
+    }
+    // Nor without a way to reconnect.
+    let mut no_factory = App::new(state(), true, false);
+    no_factory.on_client_event(&opened());
+    no_factory.on_client_event(&disconnected("x"));
+    assert!(
+        no_factory
+            .retry_due(Instant::now() + RETRY_MAX * 2)
+            .is_empty()
+    );
 }
 
 #[test]

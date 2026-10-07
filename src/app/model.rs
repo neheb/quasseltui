@@ -32,6 +32,7 @@ use crate::app::format::{
 };
 use crate::app::log_view::LogView;
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, IrcMessage};
+use crate::protocol::error::Error;
 use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId, NetworkId};
 use crate::sync::events::ClientEvent;
 use crate::util::text::sanitize_and_truncate;
@@ -46,6 +47,10 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// A history request with no reply after this is given up on.
 const BACKLOG_TIMEOUT: Duration = Duration::from_secs(60);
 pub const DEFAULT_PLACEHOLDER: &str = "Type a message and press Enter…";
+/// Automatic reconnects back off from this, doubling per failed attempt...
+const RETRY_FIRST: Duration = Duration::from_secs(2);
+/// ...up to this.
+const RETRY_MAX: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -303,6 +308,12 @@ pub struct App {
     last_click: Option<(TreeRow, Instant)>,
     /// The first `y` of a `yy` was pressed in normal mode.
     pending_yank: bool,
+    /// While disconnected: why, and when to try again on our own (`None`
+    /// when retrying can't help, like a rejected password).
+    disconnect_reason: String,
+    retry_at: Option<Instant>,
+    /// Reconnect attempts since the last session opened.
+    retries: u32,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     session_opened: bool,
@@ -334,6 +345,9 @@ impl App {
             history_start: HashSet::new(),
             last_click: None,
             pending_yank: false,
+            disconnect_reason: String::new(),
+            retry_at: None,
+            retries: 0,
             completion: None,
             session_opened: false,
             presession_fatal: true,
@@ -381,10 +395,11 @@ impl App {
     /// Drop expired toasts. Returns whether anything changed.
     pub fn tick(&mut self, now: Instant) -> bool {
         let expired = self.expire_backlog_requests(now);
+        let countdown = self.update_disconnected_placeholder(now);
         let before = self.toasts.len();
         self.toasts
             .retain(|t| now.saturating_duration_since(t.shown_at) < t.lifetime());
-        expired || before != self.toasts.len()
+        expired || countdown || before != self.toasts.len()
     }
 
     /// Give up on history requests the core never answered, so the view
@@ -427,6 +442,7 @@ impl App {
         match event {
             ClientEvent::SessionOpened { .. } => {
                 self.session_opened = true;
+                self.reconnected();
                 if let Some(active) = self.active_buffer_id {
                     // Reconnect: keep the user's buffer and refresh it, which
                     // re-requests the backlog to fill the gap since the drop.
@@ -463,9 +479,19 @@ impl App {
                     Vec::new()
                 }
             }
-            ClientEvent::Disconnected { reason, .. } => {
+            ClientEvent::Disconnected { reason, error } => {
                 let fatal = !self.session_opened && self.presession_fatal;
-                self.session_ended(reason, fatal);
+                // Retrying can't fix these; they need the user.
+                let retryable = !matches!(
+                    error.as_deref(),
+                    Some(
+                        Error::Auth(_)
+                            | Error::NotConfigured(_)
+                            | Error::TlsDowngrade(_)
+                            | Error::InitRejected(_)
+                    )
+                );
+                self.session_ended(reason, fatal, retryable);
                 Vec::new()
             }
             ClientEvent::BufferActivity {
@@ -609,7 +635,7 @@ impl App {
         self.select_buffer(target)
     }
 
-    fn session_ended(&mut self, reason: &str, fatal: bool) {
+    fn session_ended(&mut self, reason: &str, fatal: bool, retryable: bool) {
         let safe = sanitize_and_truncate(reason, MAX_REASON_LEN);
         tracing::warn!("session ended: {safe}");
         if !self.live {
@@ -622,27 +648,58 @@ impl App {
             });
             return;
         }
-        self.enter_disconnected(&safe);
+        self.enter_disconnected(&safe, retryable);
     }
 
-    /// Latch the disconnected state and make it visible. Typed text is
-    /// stashed so the placeholder shows, and restored on reconnect.
-    fn enter_disconnected(&mut self, reason: &str) {
+    /// Latch the disconnected state and make it visible, and schedule an
+    /// automatic reconnect when one could help. Typed text is stashed so
+    /// the placeholder shows, and restored once a session opens again.
+    fn enter_disconnected(&mut self, reason: &str, retryable: bool) {
         if self.connection_lost {
             return;
         }
         self.connection_lost = true;
-        self.notify(&format!("Disconnected: {reason}"), Severity::Error);
+        // Only the first drop gets a toast; failed retries just update the
+        // input bar, or a long outage would toast every minute.
+        if self.retries == 0 {
+            self.notify(&format!("Disconnected: {reason}"), Severity::Error);
+        }
         self.input.disabled = true;
         if !self.input.value.is_empty() {
             self.pending_input = Some(std::mem::take(&mut self.input.value));
             self.input.cursor = 0;
         }
-        self.input.placeholder =
-            format!("Disconnected: {reason} — Ctrl+R to reconnect, Ctrl+Q to quit");
         if self.focus == Focus::Input {
             self.focus = Focus::Log;
         }
+        self.disconnect_reason = reason.to_string();
+        let now = Instant::now();
+        self.retry_at = (retryable && self.live && self.reconnectable).then(|| {
+            let delay = RETRY_FIRST.saturating_mul(1 << self.retries.min(16));
+            now + delay.min(RETRY_MAX)
+        });
+        self.update_disconnected_placeholder(now);
+    }
+
+    /// The input bar's account of the outage, with the retry countdown.
+    /// Returns whether it changed.
+    fn update_disconnected_placeholder(&mut self, now: Instant) -> bool {
+        if !self.connection_lost {
+            return false;
+        }
+        let reason = &self.disconnect_reason;
+        let text = match self.retry_at {
+            Some(at) => {
+                let secs = at.saturating_duration_since(now).as_secs_f64().ceil();
+                format!("Disconnected: {reason} — retrying in {secs}s (Ctrl+R now, Ctrl+Q to quit)")
+            }
+            None => format!("Disconnected: {reason} — Ctrl+R to reconnect, Ctrl+Q to quit"),
+        };
+        if text == self.input.placeholder {
+            return false;
+        }
+        self.input.placeholder = text;
+        true
     }
 
     /// Ctrl+R. Only acts when the connection is actually lost: tearing
@@ -655,25 +712,51 @@ impl App {
             self.notify("Already connected", Severity::Info);
             return Vec::new();
         }
+        self.notify("Reconnecting…", Severity::Info);
+        self.start_reconnect()
+    }
+
+    /// Reconnect on our own once the backoff has run out.
+    pub fn retry_due(&mut self, now: Instant) -> Vec<Effect> {
+        match self.retry_at {
+            Some(at) if self.connection_lost && now >= at => self.start_reconnect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Replace the connection. The input stays disabled until the new
+    /// session opens (see [`Self::reconnected`]), so a failing attempt
+    /// doesn't flip it, or the focus, back and forth.
+    fn start_reconnect(&mut self) -> Vec<Effect> {
         self.connection_lost = false;
+        self.retry_at = None;
+        self.retries = self.retries.saturating_add(1);
         // Requests on the old connection will never be answered.
         self.initial_pending.clear();
         self.older_pending.clear();
+        self.input.placeholder = "Reconnecting…".into();
+        // A still-down core must re-enter the disconnected state rather
+        // than exit and destroy the scrollback.
+        self.presession_fatal = false;
+        self.session_opened = false;
+        vec![Effect::Reconnect]
+    }
+
+    /// A session opened after a reconnect: typing works again, and a
+    /// stashed draft comes back (with the focus, to finish it).
+    fn reconnected(&mut self) {
+        self.retries = 0;
+        if !self.input.disabled {
+            return;
+        }
         self.input.disabled = false;
         self.input.placeholder = DEFAULT_PLACEHOLDER.into();
-        // Back to typing only to finish a stashed draft.
         if let Some(text) = self.pending_input.take()
             && self.input.value.is_empty()
         {
             self.input.set_value(text);
             self.focus = Focus::Input;
         }
-        self.notify("Reconnecting…", Severity::Info);
-        // A still-down core must re-enter the disconnected state rather
-        // than exit and destroy the scrollback.
-        self.presession_fatal = false;
-        self.session_opened = false;
-        vec![Effect::Reconnect]
     }
 
     // -- input ------------------------------------------------------------------

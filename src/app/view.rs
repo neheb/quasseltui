@@ -364,7 +364,7 @@ fn render_toasts(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 
 const HELP: &[(&str, &str)] = &[
     ("Ctrl+Q (or q in normal)", "Quit"),
-    ("Ctrl+R", "Reconnect after a disconnect"),
+    ("Ctrl+R", "Reconnect now (it also retries on its own)"),
     ("Esc", "Typing ↔ normal mode"),
     ("Tab / Shift+Tab", "Typing: complete a nick"),
     (

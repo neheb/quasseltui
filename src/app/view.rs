@@ -22,7 +22,7 @@ use crate::app::log_view::RowKey;
 use crate::app::model::{Activity, App, Focus, Severity, TreeRow};
 use crate::app::theme::Theme;
 use crate::protocol::types::{BufferId, BufferType, NetworkId};
-use crate::util::text::sanitize_terminal;
+use crate::util::text::{sanitize_terminal, strip_mirc_formatting};
 
 const SIDEBAR_WIDTH: u16 = 28;
 
@@ -180,10 +180,10 @@ fn segment_style(kind: SegmentKind, theme: &Theme) -> Style {
 
 fn render_log(frame: &mut Frame<'_>, app: &mut App, theme: &Theme, area: Rect) {
     let focused = app.focus == Focus::Log;
-    let title = match app
+    let active = app
         .active_buffer_id
-        .and_then(|id| app.state.buffers.get(&id))
-    {
+        .and_then(|id| app.state.buffers.get(&id));
+    let name = match active {
         Some(info) => {
             let network = app
                 .state
@@ -198,6 +198,22 @@ fn render_log(frame: &mut Frame<'_>, app: &mut App, theme: &Theme, area: Rect) {
         }
         None => " quasseltui ".to_string(),
     };
+    // The channel topic follows, dimmed, in whatever room the border has.
+    let topic = active
+        .and_then(|info| app.state.channel_for_buffer(info))
+        .map(|channel| sanitize_terminal(&strip_mirc_formatting(&channel.topic)))
+        .filter(|topic| !topic.trim().is_empty());
+    let room = usize::from(area.width.saturating_sub(4)).saturating_sub(name.width());
+    let mut title = vec![Span::raw(name)];
+    if let Some(topic) = topic
+        && room > 4
+    {
+        title.push(Span::styled(
+            format!("{} ", truncate(&topic, room - 1)),
+            theme.muted_style(),
+        ));
+    }
+    let title = Line::from(title);
     let inner = area.inner(Margin::new(1, 1));
     app.log.set_viewport(inner.width, inner.height);
 
@@ -467,6 +483,24 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn channel_topic_shows_in_the_title_sanitized() {
+        let mut app = App::new(build_demo_state(), false, false);
+        let info = app.state.buffers[&app.active_buffer_id.unwrap()].clone();
+        let mut channel =
+            crate::sync::IrcChannel::new(format!("{}/{}", info.network_id, info.name));
+        channel.topic = "\x02Welcome\x02 \x1b[2Jto the channel".into();
+        app.state
+            .channels
+            .insert(channel.object_name.clone(), channel);
+        let screen = draw(&mut app, 100, 20);
+        assert!(screen.contains("Welcome"), "{screen}");
+        assert!(!screen.contains('\x1b') && !screen.contains('\x02'));
+        // Too narrow for it: the name still shows, the topic gives way.
+        let narrow = draw(&mut app, 40, 20);
+        assert!(narrow.contains(&info.name));
     }
 
     #[test]

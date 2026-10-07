@@ -9,7 +9,7 @@ use crate::protocol::Features;
 use crate::protocol::types::{
     BufferId, BufferInfo, BufferType, IdentityId, MessageFlags, MessageType, MsgId, NetworkId,
 };
-use crate::sync::{Identity, Network, NetworkConnectionState};
+use crate::sync::{Identity, IrcChannel, Network, NetworkConnectionState};
 
 fn epoch() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 4, 15, 14, 30, 0).unwrap()
@@ -54,6 +54,19 @@ pub fn build_demo_state() -> ClientState {
         state.messages.insert(info.buffer_id, Vec::new());
         state.buffers.insert(info.buffer_id, info);
     }
+
+    // #python's roster: a topic for the title, members for Tab completion.
+    let mut channel = IrcChannel::new("1/#python");
+    channel.topic = "Python discussion · 3.14 is out · https://python.org".into();
+    for (nick, modes) in [
+        ("guido", "@"),
+        ("raymondh", "+"),
+        ("seanr", ""),
+        ("barry", ""),
+    ] {
+        channel.user_modes.insert(nick.into(), modes.into());
+    }
+    state.channels.insert(channel.object_name.clone(), channel);
 
     let python = [
         (1001, 0, "guido", "@", "anyone awake on 3.14?"),

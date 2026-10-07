@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The channel topic shows in the scrollback title**, dimmed after the
+  channel and network names, cut to fit.
 - **Multi-line paste** is sent as separate lines after a confirmation
   (`Enter` sends, `Esc` cancels) instead of being flattened into one.
   Pasted lines starting with `/` go out as text (`/say`), never as

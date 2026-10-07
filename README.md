@@ -46,6 +46,7 @@ Example:
 default_server = home
 # hide_joins_parts = false  (true hides joins, parts, quits and netsplits)
 # hide_nick_changes = false  (true hides nick changes)
+# notify = true  (false: no bell or desktop notification on highlights)
 
 [server:home]
 host = irc.example.com
@@ -84,6 +85,12 @@ netsplit joins/quits out of the scrollback. They also stop counting as
 unread activity. `hide_nick_changes = true` does the same for nick
 changes. Nothing is discarded: turn the option off and restart to see them
 again.
+
+A highlight or private message in a buffer you aren't looking at (or any
+buffer while the terminal is in the background) rings the terminal bell
+and asks the terminal for a desktop notification (OSC 777: foot, ghostty,
+wezterm, rxvt and others; other terminals ignore it). Each buffer alerts at
+most every 30 seconds. `notify = false` turns this off.
 
 ## Keys
 

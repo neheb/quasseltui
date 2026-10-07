@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::format::{
-    CHAT_TYPES, DisplaySettings, format_message_plain, is_chat, ordered_buffer_ids,
+    CHAT_TYPES, DisplaySettings, buffer_label, format_message_plain, is_chat, ordered_buffer_ids,
     pick_default_buffer, short_sender,
 };
 use crate::app::log_view::LogView;
@@ -35,7 +35,7 @@ use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, IrcMessage};
 use crate::protocol::error::Error;
 use crate::protocol::types::{BufferId, BufferInfo, BufferType, MessageFlags, MsgId, NetworkId};
 use crate::sync::events::ClientEvent;
-use crate::util::text::sanitize_and_truncate;
+use crate::util::text::{sanitize_and_truncate, strip_mirc_formatting};
 
 /// Longest disconnect reason or notice shown. A hostile core can send an
 /// arbitrarily long error, and escaping control bytes can quadruple it.
@@ -51,6 +51,9 @@ pub const DEFAULT_PLACEHOLDER: &str = "Type a message and press Enter…";
 const RETRY_FIRST: Duration = Duration::from_secs(2);
 /// ...up to this.
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// At most one alert per buffer this often, so a busy query or a flood of
+/// highlights doesn't bury the desktop in notifications.
+const ALERT_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -128,6 +131,12 @@ pub enum Effect {
     Reconnect,
     /// Put text on the system clipboard (via the terminal).
     Copy(String),
+    /// Get the user's attention: ring the bell and raise a desktop
+    /// notification. The text is untrusted and not yet sanitized.
+    Alert {
+        title: String,
+        body: String,
+    },
 }
 
 /// How the app wants to exit.
@@ -314,6 +323,10 @@ pub struct App {
     retry_at: Option<Instant>,
     /// Reconnect attempts since the last session opened.
     retries: u32,
+    /// Whether the terminal window has focus, as far as it reports.
+    terminal_focused: bool,
+    /// When each buffer last raised an alert.
+    last_alert: HashMap<BufferId, Instant>,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     session_opened: bool,
@@ -348,6 +361,8 @@ impl App {
             disconnect_reason: String::new(),
             retry_at: None,
             retries: 0,
+            terminal_focused: true,
+            last_alert: HashMap::new(),
             completion: None,
             session_opened: false,
             presession_fatal: true,
@@ -456,6 +471,7 @@ impl App {
             }
             ClientEvent::BufferRemoved { buffer_id } => {
                 self.buffer_activity.remove(buffer_id);
+                self.last_alert.remove(buffer_id);
                 self.initial_pending.remove(buffer_id);
                 self.older_pending.remove(buffer_id);
                 self.history_start.remove(buffer_id);
@@ -467,10 +483,7 @@ impl App {
                     self.maybe_pick_default()
                 }
             }
-            ClientEvent::MessageReceived(message) => {
-                self.handle_message(message);
-                Vec::new()
-            }
+            ClientEvent::MessageReceived(message) => self.handle_message(message),
             ClientEvent::BacklogReceived { buffer_id, count } => {
                 self.older_backlog_arrived(*buffer_id, *count);
                 if Some(*buffer_id) == self.active_buffer_id && *count > 0 {
@@ -520,20 +533,43 @@ impl App {
         self.active_updated(Some(id))
     }
 
-    fn handle_message(&mut self, message: &IrcMessage) {
+    fn handle_message(&mut self, message: &IrcMessage) -> Vec<Effect> {
         let buffer = message.buffer_id;
-        if Some(buffer) != self.active_buffer_id
-            && !message.flags.contains(MessageFlags::SELF)
-            && is_chat(message.kind)
-        {
-            let highlight = message.flags.contains(MessageFlags::HIGHLIGHT)
-                || self
-                    .state
-                    .buffers
-                    .get(&buffer)
-                    .is_some_and(|info| info.kind == BufferType::Query);
+        if message.flags.contains(MessageFlags::SELF) || !is_chat(message.kind) {
+            return Vec::new();
+        }
+        let info = self.state.buffers.get(&buffer);
+        let query = info.is_some_and(|info| info.kind == BufferType::Query);
+        let label = info.map(buffer_label);
+        let highlight = query || message.flags.contains(MessageFlags::HIGHLIGHT);
+        let in_view = Some(buffer) == self.active_buffer_id;
+        if !in_view {
             self.mark_activity(buffer, highlight);
         }
+        if !highlight || (in_view && self.terminal_focused) || !self.log.settings.notify {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        if self
+            .last_alert
+            .get(&buffer)
+            .is_some_and(|at| now.saturating_duration_since(*at) < ALERT_INTERVAL)
+        {
+            return Vec::new();
+        }
+        self.last_alert.insert(buffer, now);
+        let nick = short_sender(&message.sender);
+        let title = match label {
+            Some(label) if !query => format!("{nick} in {label}"),
+            _ => nick.to_string(),
+        };
+        let body = strip_mirc_formatting(&message.contents);
+        vec![Effect::Alert { title, body }]
+    }
+
+    /// The terminal window gained or lost focus.
+    pub fn set_terminal_focus(&mut self, focused: bool) {
+        self.terminal_focused = focused;
     }
 
     fn mark_activity(&mut self, buffer: BufferId, highlight: bool) {

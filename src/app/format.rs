@@ -79,14 +79,17 @@ pub fn is_chat(kind: MessageType) -> bool {
     kind as u32 & CHAT_TYPES != 0
 }
 
-/// What the scrollback shows. Hidden messages stay in the state; they are
-/// only left out of the display.
+/// UI preferences from the config file. Hidden messages stay in the
+/// state; they are only left out of the display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DisplaySettings {
     /// Hide joins, parts, quits, and netsplit joins/quits.
     pub hide_joins_parts: bool,
     /// Hide nick changes.
     pub hide_nick_changes: bool,
+    /// Alert (bell and desktop notification) on highlights and private
+    /// messages that arrive out of sight.
+    pub notify: bool,
 }
 
 impl DisplaySettings {

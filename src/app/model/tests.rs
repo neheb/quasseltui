@@ -1160,6 +1160,60 @@ fn tab_completion_without_a_member_list() {
 }
 
 #[test]
+fn alerts_for_highlights_and_queries_out_of_sight() {
+    let mut app = live_app();
+    app.set_display(DisplaySettings {
+        notify: true,
+        ..DisplaySettings::default()
+    });
+    app.on_client_event(&opened());
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+    let alert = |title: &str, body: &str| Effect::Alert {
+        title: title.into(),
+        body: body.into(),
+    };
+    let flagged = |id, buffer, flags| IrcMessage {
+        sender: "bob!u@h".into(),
+        contents: "\x02hey\x02 you".into(),
+        ..message(id, buffer, flags)
+    };
+
+    // Plain chatter elsewhere only marks the sidebar.
+    assert!(deliver(&mut app, flagged(1, 11, MessageFlags::NONE)).is_empty());
+    // A highlight elsewhere alerts, without mIRC formatting.
+    assert_eq!(
+        deliver(&mut app, flagged(2, 11, MessageFlags::HIGHLIGHT)),
+        [alert("bob in #b", "hey you")]
+    );
+    // ...but not again for that buffer right away.
+    assert!(deliver(&mut app, flagged(3, 11, MessageFlags::HIGHLIGHT)).is_empty());
+    // Any private message counts.
+    assert_eq!(
+        deliver(&mut app, flagged(4, 12, MessageFlags::NONE)),
+        [alert("bob", "hey you")]
+    );
+    // Our own lines never do.
+    let own = MessageFlags::HIGHLIGHT | MessageFlags::SELF;
+    app.select_buffer(BufferId(10));
+    app.last_alert.clear();
+    assert!(deliver(&mut app, flagged(5, 11, own)).is_empty());
+
+    // In the buffer we're reading: only when the terminal is in the
+    // background.
+    assert!(deliver(&mut app, flagged(6, 10, MessageFlags::HIGHLIGHT)).is_empty());
+    app.set_terminal_focus(false);
+    assert_eq!(
+        deliver(&mut app, flagged(7, 10, MessageFlags::HIGHLIGHT)),
+        [alert("bob in #a", "hey you")]
+    );
+
+    // Off in the config: nothing.
+    app.set_display(DisplaySettings::default());
+    app.last_alert.clear();
+    assert!(deliver(&mut app, flagged(8, 11, MessageFlags::HIGHLIGHT)).is_empty());
+}
+
+#[test]
 fn starts_in_normal_mode() {
     let mut app = live_app();
     app.on_client_event(&opened());

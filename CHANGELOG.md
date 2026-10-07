@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Alerts for highlights and private messages** that arrive out of sight:
+  the terminal bell plus a desktop notification (OSC 777), at most every
+  30 seconds per buffer. `notify = false` in `[quasseltui]` turns them off.
 - **Automatic reconnect.** After a disconnect quasseltui retries on its
   own, waiting 2s, then 4s, 8s, and so on up to once a minute; the input
   bar counts down, and `Ctrl+R` still reconnects right away. A rejected

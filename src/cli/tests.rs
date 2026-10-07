@@ -25,6 +25,7 @@ fn config_with(servers: Vec<ServerConfig>, default: Option<&str>) -> Config {
         default_server: default.map(String::from),
         hide_joins_parts: false,
         hide_nick_changes: false,
+        notify: true,
         servers: servers.into_iter().map(|s| (s.name.clone(), s)).collect(),
     }
 }

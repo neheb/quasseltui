@@ -588,7 +588,8 @@ fn display_settings(command: &str) -> Result<DisplaySettings, ExitCode> {
     match load_config() {
         Ok(cfg) => Ok(DisplaySettings {
             hide_joins_parts: cfg.as_ref().is_some_and(|c| c.hide_joins_parts),
-            hide_nick_changes: cfg.is_some_and(|c| c.hide_nick_changes),
+            hide_nick_changes: cfg.as_ref().is_some_and(|c| c.hide_nick_changes),
+            notify: cfg.is_none_or(|c| c.notify),
         }),
         Err(e) => {
             eprintln!("{command}: config: {e}");

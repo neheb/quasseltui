@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 
 use crossterm::cursor::Show;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyEventKind, MouseButton, MouseEventKind,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, EnableMouseCapture, Event, EventStream, KeyEventKind, MouseButton,
+    MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -63,7 +64,8 @@ fn init_terminal() -> io::Result<ratatui::DefaultTerminal> {
         io::stdout(),
         EnterAlternateScreen,
         EnableMouseCapture,
-        EnableBracketedPaste
+        EnableBracketedPaste,
+        EnableFocusChange
     );
     if let Err(e) = setup {
         restore_terminal();
@@ -90,6 +92,7 @@ fn restore_terminal() {
         io::stdout(),
         DisableMouseCapture,
         DisableBracketedPaste,
+        DisableFocusChange,
         LeaveAlternateScreen,
         Show
     );
@@ -241,6 +244,10 @@ async fn event_loop(
                 copy_to_clipboard(text);
                 continue;
             }
+            if let Effect::Alert { title, body } = &effect {
+                alert(title, body);
+                continue;
+            }
             if let Effect::Reconnect = effect {
                 if let Some(make) = factory {
                     if let Some(old) = client.take() {
@@ -261,6 +268,10 @@ async fn event_loop(
 fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effect> {
     match event {
         Event::Key(key) if key.kind != KeyEventKind::Release => app.on_key(key),
+        Event::FocusGained | Event::FocusLost => {
+            app.set_terminal_focus(event == Event::FocusGained);
+            Vec::new()
+        }
         Event::Paste(text) => {
             app.on_paste(&text);
             Vec::new()
@@ -367,7 +378,7 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                 tracing::warn!("set_marker_line failed for buffer {buffer}: {error}");
             });
         }
-        Effect::Reconnect | Effect::Copy(_) => {}
+        Effect::Reconnect | Effect::Copy(_) | Effect::Alert { .. } => {}
     }
 }
 
@@ -391,6 +402,35 @@ fn copy_to_clipboard(text: &str) {
     if let Err(e) = written {
         tracing::warn!("copy to clipboard failed: {e}");
     }
+}
+
+/// Ring the bell (window managers mark the terminal urgent) and ask the
+/// terminal for a desktop notification (OSC 777, understood by foot,
+/// ghostty, wezterm, rxvt and others; ignored elsewhere).
+fn alert(title: &str, body: &str) {
+    use std::io::Write;
+    let mut out = io::stdout();
+    let written = write!(
+        out,
+        "\x07\x1b]777;notify;{};{}\x1b\\",
+        notification_text(title, 80),
+        notification_text(body, 200)
+    )
+    .and_then(|()| out.flush());
+    if let Err(e) = written {
+        tracing::warn!("alert failed: {e}");
+    }
+}
+
+/// Core-supplied text made safe inside an OSC string: no control
+/// characters (which could end the sequence and inject others) and no `;`
+/// (the field separator), cut to `max` characters.
+fn notification_text(text: &str, max: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .map(|c| if c == ';' { ',' } else { c })
+        .take(max)
+        .collect()
 }
 
 /// Standard base64 with padding.
@@ -439,7 +479,17 @@ fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<i32>> {
 
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use super::{base64, notification_text};
+
+    #[test]
+    fn notification_text_cant_break_out_of_the_sequence() {
+        let hostile = "hi\x1b\\\x1b]0;pwned\x07\u{9c};x\nnext";
+        let safe = notification_text(hostile, 200);
+        assert!(!safe.chars().any(char::is_control), "{safe:?}");
+        assert!(!safe.contains(';'));
+        assert_eq!(safe, "hi\\]0,pwned,xnext");
+        assert_eq!(notification_text("ééééé", 3), "ééé");
+    }
 
     #[test]
     fn base64_pads() {

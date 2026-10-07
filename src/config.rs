@@ -31,7 +31,12 @@ use std::path::{Path, PathBuf};
 
 const MAIN_SECTION: &str = "quasseltui";
 const SERVER_PREFIX: &str = "server:";
-const ALLOWED_MAIN_KEYS: [&str; 3] = ["default_server", "hide_joins_parts", "hide_nick_changes"];
+const ALLOWED_MAIN_KEYS: [&str; 4] = [
+    "default_server",
+    "hide_joins_parts",
+    "hide_nick_changes",
+    "notify",
+];
 const ALLOWED_SERVER_KEYS: [&str; 8] = [
     "cafile",
     "connect_timeout",
@@ -70,6 +75,9 @@ pub struct Config {
     pub hide_joins_parts: bool,
     /// Leave nick changes out of the scrollback.
     pub hide_nick_changes: bool,
+    /// Ring the bell and send a desktop notification on highlights and
+    /// private messages (default on).
+    pub notify: bool,
     pub servers: BTreeMap<String, ServerConfig>,
 }
 
@@ -148,6 +156,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     let mut default_server = None;
     let mut hide_joins_parts = false;
     let mut hide_nick_changes = false;
+    let mut notify = true;
     let mut servers = BTreeMap::new();
     for (section, values) in &sections {
         if section == "DEFAULT" {
@@ -172,15 +181,16 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
             if !value.is_empty() {
                 default_server = Some(value);
             }
-            let flag = |key: &str| -> Result<bool, ConfigError> {
-                merged.get(key).map_or(Ok(false), |raw| {
+            let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
+                merged.get(key).map_or(Ok(default), |raw| {
                     parse_bool(raw)
-                        .map(|v| v.unwrap_or(false))
+                        .map(|v| v.unwrap_or(default))
                         .map_err(|e| ConfigError(format!("{shown}: [{MAIN_SECTION}] {key}: {e}")))
                 })
             };
-            hide_joins_parts = flag("hide_joins_parts")?;
-            hide_nick_changes = flag("hide_nick_changes")?;
+            hide_joins_parts = flag("hide_joins_parts", false)?;
+            hide_nick_changes = flag("hide_nick_changes", false)?;
+            notify = flag("notify", true)?;
             continue;
         }
         let Some(rest) = section.strip_prefix(SERVER_PREFIX) else {
@@ -210,6 +220,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
         default_server,
         hide_joins_parts,
         hide_nick_changes,
+        notify,
         servers,
     }))
 }
@@ -482,6 +493,14 @@ mod tests {
         assert!(load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_joins_parts);
         assert!(!load_ok("[quasseltui]\nhide_joins_parts = off\n").hide_joins_parts);
         assert!(load_err("[quasseltui]\nhide_joins_parts = maybe\n").contains("hide_joins_parts"));
+    }
+
+    #[test]
+    fn notify_option_defaults_on() {
+        assert!(load_ok("[server:home]\nhost = x\n").notify);
+        assert!(load_ok("[quasseltui]\nnotify =\n").notify);
+        assert!(!load_ok("[quasseltui]\nnotify = off\n").notify);
+        assert!(load_err("[quasseltui]\nnotify = loud\n").contains("notify"));
     }
 
     #[test]

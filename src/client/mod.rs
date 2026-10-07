@@ -186,25 +186,36 @@ impl QuasselClient {
     }
 }
 
+/// A queued request: resolves once it is written to the core.
+pub type Request = std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
 /// Requests to the core. Cheap to clone and `Send`, so a UI can run each
 /// request in its own task.
+///
+/// Each request is queued when its method is called; the returned future
+/// only waits for the write. Requests therefore reach the core in call
+/// order, whichever task awaits first.
 #[derive(Clone)]
 pub struct ClientHandle {
     connection: ConnectionHandle,
 }
 
 impl ClientHandle {
-    async fn send(&self, message: SignalProxyMessage, what: &str) -> Result<()> {
-        self.connection.send(message).await.map_err(|e| match e {
-            // State errors are already clear on their own.
-            Error::Other(msg) if msg.starts_with("cannot send") => Error::Other(msg),
-            other => Error::Other(format!("failed to {what}: {other}")),
+    fn send(&self, message: SignalProxyMessage, what: &str) -> Request {
+        let sent = self.connection.send(message);
+        let what = what.to_string();
+        Box::pin(async move {
+            sent.await.map_err(|e| match e {
+                // State errors are already clear on their own.
+                Error::Other(msg) if msg.starts_with("cannot send") => Error::Other(msg),
+                other => Error::Other(format!("failed to {what}: {other}")),
+            })
         })
     }
 
     /// Send a chat line or `/command` for a buffer. The core echoes the
     /// result back as an ordinary `displayMsg`.
-    pub async fn send_input(&self, buffer: BufferInfo, text: String) -> Result<()> {
+    pub fn send_input(&self, buffer: BufferInfo, text: String) -> Request {
         let rpc = SignalProxyMessage::RpcCall(RpcCall {
             signal_name: SEND_INPUT_SIGNAL.to_vec(),
             params: vec![
@@ -212,30 +223,30 @@ impl ClientHandle {
                 Variant::String(text),
             ],
         });
-        self.send(rpc, "send input").await
+        self.send(rpc, "send input")
     }
 
     /// Ask for up to `limit` historical messages. The reply arrives as a
     /// `BacklogReceived` event. Callers dedupe with
     /// `ClientState::claim_backlog` and release the latch on failure.
-    pub async fn request_backlog(&self, buffer_id: BufferId, limit: i32) -> Result<()> {
-        self.backlog_request(buffer_id, MsgId(-1), limit).await
+    pub fn request_backlog(&self, buffer_id: BufferId, limit: i32) -> Request {
+        self.backlog_request(buffer_id, MsgId(-1), limit)
     }
 
     /// Ask for up to `limit` messages older than `before`, to extend the
     /// history at the top of a buffer. This is the request Quassel's own
     /// client makes when it fetches more backlog: the core returns
     /// messages with ids below `before`.
-    pub async fn request_backlog_before(
+    pub fn request_backlog_before(
         &self,
         buffer_id: BufferId,
         before: MsgId,
         limit: i32,
-    ) -> Result<()> {
-        self.backlog_request(buffer_id, before, limit).await
+    ) -> Request {
+        self.backlog_request(buffer_id, before, limit)
     }
 
-    async fn backlog_request(&self, buffer_id: BufferId, last: MsgId, limit: i32) -> Result<()> {
+    fn backlog_request(&self, buffer_id: BufferId, last: MsgId, limit: i32) -> Request {
         let sync = SignalProxyMessage::Sync(SyncMessage {
             class_name: b"BacklogManager".to_vec(),
             object_name: String::new(),
@@ -248,25 +259,23 @@ impl ClientHandle {
                 Variant::Int(0),
             ],
         });
-        self.send(sync, "request backlog").await
+        self.send(sync, "request backlog")
     }
 
     /// Mark a buffer read up to `msg_id`. The core broadcasts it, which
     /// clears unread state in every other connected client.
-    pub async fn set_last_seen(&self, buffer_id: BufferId, msg_id: MsgId) -> Result<()> {
+    pub fn set_last_seen(&self, buffer_id: BufferId, msg_id: MsgId) -> Request {
         self.buffer_syncer_request(b"requestSetLastSeenMsg", buffer_id, msg_id)
-            .await
     }
 
     /// Move the core-persisted marker line, so it survives restarts and
     /// shows up in other clients.
-    pub async fn set_marker_line(&self, buffer_id: BufferId, msg_id: MsgId) -> Result<()> {
+    pub fn set_marker_line(&self, buffer_id: BufferId, msg_id: MsgId) -> Request {
         self.buffer_syncer_request(b"requestSetMarkerLine", buffer_id, msg_id)
-            .await
     }
 
     /// Ask the core to connect a network to IRC, or disconnect it.
-    pub async fn set_network_connected(&self, network_id: NetworkId, connect: bool) -> Result<()> {
+    pub fn set_network_connected(&self, network_id: NetworkId, connect: bool) -> Request {
         let slot: &[u8] = if connect {
             b"requestConnect"
         } else {
@@ -279,15 +288,9 @@ impl ClientHandle {
             params: Vec::new(),
         });
         self.send(sync, &format!("send {}", String::from_utf8_lossy(slot)))
-            .await
     }
 
-    async fn buffer_syncer_request(
-        &self,
-        slot: &[u8],
-        buffer_id: BufferId,
-        msg_id: MsgId,
-    ) -> Result<()> {
+    fn buffer_syncer_request(&self, slot: &[u8], buffer_id: BufferId, msg_id: MsgId) -> Request {
         let sync = SignalProxyMessage::Sync(SyncMessage {
             class_name: buffer_syncer::CLASS_NAME.to_vec(),
             object_name: String::new(),
@@ -298,7 +301,6 @@ impl ClientHandle {
             ],
         });
         self.send(sync, &format!("send {}", String::from_utf8_lossy(slot)))
-            .await
     }
 
     pub fn close(&self) {

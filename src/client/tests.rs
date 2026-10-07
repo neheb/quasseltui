@@ -244,6 +244,42 @@ async fn network_created_mid_session_gets_one_init_request() {
 }
 
 #[tokio::test]
+async fn requests_go_out_in_call_order_whoever_awaits_first() {
+    // The UI runs each request as its own task, and the scheduler may poll
+    // a later task first. The wire order must still follow the calls.
+    let info = buffer(10, 1, "#python");
+    let fake = fake_core(
+        inbound_with_session(session_with(&[], std::slice::from_ref(&info)), &[]),
+        false,
+        true,
+    );
+    let mut client = client_for(&fake);
+    let mut state = ClientState::default();
+    until(&mut client, &mut state, |e| {
+        matches!(e, ClientEvent::BufferAdded { .. })
+    })
+    .await;
+
+    let handle = client.handle();
+    let first = handle.send_input(info.clone(), "first".into());
+    let second = handle.send_input(info.clone(), "second".into());
+    second.await.unwrap();
+    first.await.unwrap();
+    handle.close();
+    drain(&mut client, &mut state).await;
+
+    let lines: Vec<_> = written(fake)
+        .await
+        .into_iter()
+        .filter_map(|m| match m {
+            SignalProxyMessage::RpcCall(call) => call.params.get(1).cloned(),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lines, [Variant::from("first"), Variant::from("second")]);
+}
+
+#[tokio::test]
 async fn requests_are_written_with_the_right_shapes() {
     let info = buffer(10, 1, "#python");
     let fake = fake_core(

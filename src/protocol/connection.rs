@@ -280,21 +280,28 @@ impl ConnectionHandle {
         }
     }
 
-    /// Send a message and wait until it is written (or the write failed).
-    pub async fn send(&self, message: SignalProxyMessage) -> Result<()> {
-        self.check_connected()?;
-        let (tx, rx) = oneshot::channel();
-        self.outbound
-            .send(Outbound {
-                message,
-                ack: Some(tx),
+    /// Send a message; the future resolves once it is written (or the
+    /// write failed). The message is queued by this call, not when the
+    /// future is first polled, so messages go out in call order even when
+    /// they are awaited from different tasks.
+    pub fn send(&self, message: SignalProxyMessage) -> impl Future<Output = Result<()>> + use<> {
+        let queued = self.check_connected().and_then(|()| {
+            let (tx, rx) = oneshot::channel();
+            self.outbound
+                .send(Outbound {
+                    message,
+                    ack: Some(tx),
+                })
+                .map_err(|_| Error::ConnectionClosed("connection is closed".into()))?;
+            Ok(rx)
+        });
+        async move {
+            queued?.await.unwrap_or_else(|_| {
+                Err(Error::ConnectionClosed(
+                    "connection closed before the message was sent".into(),
+                ))
             })
-            .map_err(|_| Error::ConnectionClosed("connection is closed".into()))?;
-        rx.await.unwrap_or_else(|_| {
-            Err(Error::ConnectionClosed(
-                "connection closed before the message was sent".into(),
-            ))
-        })
+        }
     }
 
     /// Queue a message without waiting. A write failure still tears the

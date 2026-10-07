@@ -39,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Lines sent in quick succession can no longer arrive out of order.**
+  Each request is queued when it's made, not when its background task
+  first runs.
 - **A hostile core can no longer bloat the session at startup.**
   `SessionInit` lists are capped (networks, identities, buffers) before
   they are seeded or turned into init requests.

@@ -2,9 +2,10 @@
 //! events, and carries out its effects.
 //!
 //! Everything runs on one task. The client's `recv` is cancel-safe, so it
-//! sits in the same `select!` as terminal input. Requests to the core run
-//! as small spawned tasks that report failures back through a channel, so a
-//! slow socket never blocks typing. Bursts of client events are applied
+//! sits in the same `select!` as terminal input. Requests to the core are
+//! queued in order on this task; waiting for each write runs as a small
+//! spawned task that reports failures back through a channel, so a slow
+//! socket never blocks typing. Bursts of client events are applied
 //! together before a redraw, which replaces the old 50 ms debounce.
 
 use std::io;
@@ -25,7 +26,7 @@ use crate::app::format::DisplaySettings;
 use crate::app::model::{App, Effect, Exit};
 use crate::app::theme::{Theme, ThemeWatcher};
 use crate::app::view::{self, Areas};
-use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, QuasselClient};
+use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, QuasselClient, Request};
 use crate::protocol::connection::ProtocolEvent;
 use crate::protocol::types::BufferId;
 
@@ -334,69 +335,67 @@ fn watch_theme(mut watcher: ThemeWatcher) -> mpsc::UnboundedReceiver<Theme> {
     rx
 }
 
-/// Run one request as its own task; failures come back as outcomes.
+/// Queue one request now, so requests reach the core in the order the app
+/// asked for them; only the wait for the write runs as a task. Failures
+/// come back as outcomes.
 fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::UnboundedSender<Failure>) {
     let handle = client.handle();
+    let report = move |failure: Failure| {
+        let _ = outcomes.send(failure);
+    };
+    match effect {
+        Effect::SendInput { buffer, text } => {
+            let sent = handle.send_input(buffer, text.clone());
+            on_failure(sent, move |error| report(Failure::Send { text, error }));
+        }
+        Effect::SendCommand { buffer, text } => {
+            let sent = handle.send_input(buffer, text.clone());
+            on_failure(sent, move |error| report(Failure::Command { text, error }));
+        }
+        Effect::SetNetworkConnected { network, connect } => {
+            let sent = handle.set_network_connected(network, connect);
+            let text = if connect { "Connect" } else { "Disconnect" }.to_string();
+            on_failure(sent, move |error| report(Failure::Command { text, error }));
+        }
+        Effect::RequestOlderBacklog {
+            buffer,
+            before,
+            limit,
+        } => {
+            let sent = handle.request_backlog_before(buffer, before, limit);
+            on_failure(sent, move |error| {
+                report(Failure::OlderBacklog { buffer, error });
+            });
+        }
+        Effect::RequestBacklog(buffer) => {
+            let sent = handle.request_backlog(buffer, DEFAULT_BACKLOG_LIMIT);
+            on_failure(sent, move |error| {
+                report(Failure::Backlog { buffer, error })
+            });
+        }
+        // Losing one read-state sync is invisible locally, and the next
+        // switch retries naturally, so these are only logged.
+        Effect::SetLastSeen(buffer, msg) => {
+            let sent = handle.set_last_seen(buffer, msg);
+            on_failure(sent, move |error| {
+                tracing::warn!("set_last_seen failed for buffer {buffer}: {error}");
+            });
+        }
+        Effect::SetMarkerLine(buffer, msg) => {
+            let sent = handle.set_marker_line(buffer, msg);
+            on_failure(sent, move |error| {
+                tracing::warn!("set_marker_line failed for buffer {buffer}: {error}");
+            });
+        }
+        Effect::Reconnect | Effect::Copy(_) | Effect::CompleteNick { .. } => {}
+    }
+}
+
+/// Wait for an already-queued request in the background.
+fn on_failure(sent: Request, failed: impl FnOnce(String) + Send + 'static) {
     tokio::spawn(async move {
-        match effect {
-            Effect::SendInput { buffer, text } => {
-                if let Err(e) = handle.send_input(buffer, text.clone()).await {
-                    let _ = outcomes.send(Failure::Send {
-                        text,
-                        error: e.to_string(),
-                    });
-                }
-            }
-            Effect::SendCommand { buffer, text } => {
-                if let Err(e) = handle.send_input(buffer, text.clone()).await {
-                    let _ = outcomes.send(Failure::Command {
-                        text,
-                        error: e.to_string(),
-                    });
-                }
-            }
-            Effect::SetNetworkConnected { network, connect } => {
-                if let Err(e) = handle.set_network_connected(network, connect).await {
-                    let what = if connect { "Connect" } else { "Disconnect" };
-                    let _ = outcomes.send(Failure::Command {
-                        text: what.into(),
-                        error: e.to_string(),
-                    });
-                }
-            }
-            Effect::RequestOlderBacklog {
-                buffer,
-                before,
-                limit,
-            } => {
-                if let Err(e) = handle.request_backlog_before(buffer, before, limit).await {
-                    let _ = outcomes.send(Failure::OlderBacklog {
-                        buffer,
-                        error: e.to_string(),
-                    });
-                }
-            }
-            Effect::RequestBacklog(buffer) => {
-                if let Err(e) = handle.request_backlog(buffer, DEFAULT_BACKLOG_LIMIT).await {
-                    let _ = outcomes.send(Failure::Backlog {
-                        buffer,
-                        error: e.to_string(),
-                    });
-                }
-            }
-            // Losing one read-state sync is invisible locally, and the next
-            // switch retries naturally, so these are only logged.
-            Effect::SetLastSeen(buffer, msg) => {
-                if let Err(e) = handle.set_last_seen(buffer, msg).await {
-                    tracing::warn!("set_last_seen failed for buffer {buffer}: {e}");
-                }
-            }
-            Effect::SetMarkerLine(buffer, msg) => {
-                if let Err(e) = handle.set_marker_line(buffer, msg).await {
-                    tracing::warn!("set_marker_line failed for buffer {buffer}: {e}");
-                }
-            }
-            Effect::Reconnect | Effect::Copy(_) | Effect::CompleteNick { .. } => {}
+        if let Err(e) = sent.await {
+            failed(e.to_string());
         }
     });
 }

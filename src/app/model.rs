@@ -197,6 +197,9 @@ impl InputBar {
     }
 
     fn delete_range(&mut self, start: usize, end: usize) {
+        // Callers pass start <= end; a reversed range deletes nothing
+        // rather than panicking in replace_range.
+        let start = start.min(end);
         let (a, b) = (self.byte_index(start), self.byte_index(end));
         self.value.replace_range(a..b, "");
         self.cursor = start;

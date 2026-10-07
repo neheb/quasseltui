@@ -113,9 +113,12 @@ pub fn decode_signalproxy_payload(
     }
 }
 
+/// A name field. Quassel itself reads these with `QVariant::toByteArray()`,
+/// which also takes a QString (as UTF-8), so both are accepted.
 fn expect_bytes(value: Variant, field: &str, kind: &str) -> Result<Vec<u8>> {
     match value {
         Variant::ByteArray(bytes) => Ok(bytes),
+        Variant::String(text) => Ok(text.into_bytes()),
         other => Err(sp_err(format!(
             "{kind}: expected QByteArray for {field}, got {}",
             other.type_name()
@@ -422,6 +425,33 @@ mod tests {
         let err = decode_signalproxy_payload(payload, Features::empty()).unwrap_err();
         assert!(matches!(err, Error::SignalProxy(_)), "{err:?}");
         err.to_string()
+    }
+
+    #[test]
+    fn names_sent_as_qstring_are_accepted() {
+        // Quassel reads names with QVariant::toByteArray(), which takes a
+        // QString as well.
+        let payload = list_payload(&[
+            Variant::Short(REQUEST_SYNC),
+            Variant::String("Network".into()),
+            Variant::String("1".into()),
+            Variant::String("setNetworkName".into()),
+            "Libera".into(),
+        ]);
+        assert_eq!(
+            decode_signalproxy_payload(&payload, Features::empty()).unwrap(),
+            sync(b"Network", "1", b"setNetworkName", vec!["Libera".into()])
+        );
+        // Anything else still isn't a name.
+        assert!(
+            decode_err(&list_payload(&[
+                Variant::Short(REQUEST_SYNC),
+                Variant::Int(1),
+                Variant::Null,
+                Variant::ByteArray(b"x".to_vec()),
+            ]))
+            .contains("expected QByteArray")
+        );
     }
 
     #[test]

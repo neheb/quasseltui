@@ -56,6 +56,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A read marker moved in another client moves here too** (and so does
+  one cleared there); only the marker from session start was used before.
+- **History memory is bounded per line**: message bodies are cut at 8 KiB
+  and senders at 1 KiB, since one decoded string could be 16 MiB.
+- **Roster bookkeeping no longer walks every channel** on each channel
+  update (the membership count is kept running), a huge roster in one
+  InitData isn't expanded past the caps, and the network nick/channel
+  lists share one budget.
+- **SIGTERM, SIGHUP or SIGINT at the password prompt** restore the
+  terminal instead of leaving it in raw mode.
+- **Bidi control characters** (RLO and friends) from the core are escaped
+  like other control characters, so a nick can't reverse the rest of its
+  line. Zero-width joiners stay, for emoji.
+- **A config file that exists but can't be read** is an error instead of
+  being treated as missing.
+- Messages no longer create buffers on networks the client doesn't know;
+  passwords are redacted from debug output; SignalProxy names sent as
+  QString are accepted, like Quassel does.
 - **Reconnecting drops what was deleted meanwhile**: networks, buffers
   and identities removed on the core (say, from another client) while
   quasseltui was disconnected no longer linger.

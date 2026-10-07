@@ -18,7 +18,6 @@ crossterm = { version = "0.29", features = ["event-stream"] }
 futures = "0.3"
 native-tls = "0.2"
 ratatui = "0.30"
-rpassword = "7"
 socket2 = "0.6"
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }

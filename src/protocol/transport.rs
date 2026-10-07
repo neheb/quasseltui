@@ -196,6 +196,10 @@ pub fn fmt_secs(duration: Duration) -> String {
     if text.ends_with('.') {
         text.pop();
     }
+    // "timed out after 0s" would be wrong for a sub-millisecond timeout.
+    if text == "0" && !duration.is_zero() {
+        return "<0.001".into();
+    }
     text
 }
 
@@ -259,5 +263,7 @@ mod tests {
         assert_eq!(fmt_secs(Duration::from_millis(50)), "0.05");
         assert_eq!(fmt_secs(Duration::from_millis(1500)), "1.5");
         assert_eq!(fmt_secs(Duration::from_secs(90)), "90");
+        assert_eq!(fmt_secs(Duration::from_micros(200)), "<0.001");
+        assert_eq!(fmt_secs(Duration::ZERO), "0");
     }
 }

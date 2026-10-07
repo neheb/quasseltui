@@ -1028,6 +1028,7 @@ fn channel_memberships_share_one_budget() {
         .map(|i| (format!("n{i}"), String::new()))
         .collect();
     h.state.channels.insert(big.object_name.clone(), big);
+    h.state.recount_memberships();
     let join = |nicks: &[&str]| {
         vec![
             Variant::StringList(nicks.iter().map(|n| (*n).into()).collect()),
@@ -1045,6 +1046,109 @@ fn channel_memberships_share_one_budget() {
     h.sync(b"IrcChannel", "1/#big", b"part", vec!["n0".into()]);
     h.sync(b"IrcChannel", "1/#small", b"joinIrcUsers", join(&["b"]));
     assert_eq!(h.state.channels["1/#small"].user_modes.len(), 2);
+}
+
+#[test]
+fn markers_moved_elsewhere_move_here() {
+    let info = buffer(10, 1, BufferType::Channel, "#python");
+    let mut h = Harness::new(&[1], vec![info]);
+    let marker = |bid: i32, mid: i64| {
+        vec![
+            Variant::User(UserValue::BufferId(BufferId(bid))),
+            Variant::User(UserValue::MsgId(MsgId(mid))),
+        ]
+    };
+    h.sync(b"BufferSyncer", "", b"setMarkerLine", marker(10, 42));
+    assert_eq!(h.state.read_markers[&BufferId(10)], MsgId(42));
+    // Backwards too: the core is the authority.
+    h.sync(b"BufferSyncer", "", b"setMarkerLine", marker(10, 7));
+    assert_eq!(h.state.read_markers[&BufferId(10)], MsgId(7));
+    h.sync(b"BufferSyncer", "", b"setMarkerLine", marker(10, -1));
+    assert!(!h.state.read_markers.contains_key(&BufferId(10)));
+    // Unknown buffers are ignored.
+    h.sync(b"BufferSyncer", "", b"setMarkerLine", marker(99, 5));
+    assert!(!h.state.read_markers.contains_key(&BufferId(99)));
+}
+
+#[test]
+fn messages_dont_create_buffers_on_unknown_networks() {
+    let mut h = Harness::new(&[1], vec![]);
+    let stray = buffer(50, 9, BufferType::Query, "stranger");
+    h.rpc(
+        DISPLAY_MSG_SIGNAL,
+        vec![msg_variant(message(1, &stray, "hi"))],
+    );
+    assert!(h.take().is_empty());
+    assert!(!h.state.buffers.contains_key(&BufferId(50)));
+}
+
+#[test]
+fn oversized_message_fields_are_cut() {
+    let info = buffer(10, 1, BufferType::Channel, "#python");
+    let mut h = Harness::new(&[1], vec![info.clone()]);
+    let mut big = message(1, &info, &"x".repeat(1 << 20));
+    big.sender = "n".repeat(1 << 16);
+    h.rpc(DISPLAY_MSG_SIGNAL, vec![msg_variant(big)]);
+    let kept = &h.state.messages[&BufferId(10)][0];
+    assert!(kept.contents.len() <= crate::sync::events::MAX_CONTENTS_BYTES);
+    assert!(kept.sender.len() <= crate::sync::events::MAX_SENDER_BYTES);
+    assert!(kept.contents.ends_with('…'));
+}
+
+#[test]
+fn the_membership_count_stays_in_step() {
+    let mut h = Harness::new(&[1], vec![]);
+    let check = |h: &mut Harness| {
+        let running = h.state.memberships;
+        h.state.recount_memberships();
+        assert_eq!(running, h.state.memberships);
+    };
+    let join = |nicks: &[&str]| {
+        vec![
+            Variant::StringList(nicks.iter().map(|n| (*n).into()).collect()),
+            Variant::Null,
+        ]
+    };
+    h.state.networks.get_mut(&NetworkId(1)).unwrap().my_nick = "me".into();
+    h.sync(
+        b"IrcChannel",
+        "1/#a",
+        b"joinIrcUsers",
+        join(&["me", "alice", "bob"]),
+    );
+    h.sync(
+        b"IrcChannel",
+        "1/#b",
+        b"joinIrcUsers",
+        join(&["me", "alice", "carol"]),
+    );
+    check(&mut h);
+    // A part, a quit, and a nick change onto a nick already in #b.
+    h.sync(b"IrcUser", "1/bob", b"partChannel", vec!["#a".into()]);
+    h.sync(b"IrcUser", "1/carol", b"quit", vec![]);
+    check(&mut h);
+    let renamed = |old: &str, new: &str| {
+        vec![
+            Variant::ByteArray(b"IrcUser".to_vec()),
+            new.into(),
+            old.into(),
+        ]
+    };
+    h.sync(b"IrcChannel", "1/#b", b"joinIrcUsers", join(&["dave"]));
+    h.rpc(OBJECT_RENAMED_SIGNAL, renamed("1/dave", "1/alice"));
+    check(&mut h);
+    // A snapshot replaces a roster; our own part tears a channel down.
+    let mut modes = VariantMap::new();
+    modes.insert("x".into(), Variant::Null);
+    h.init(
+        b"IrcChannel",
+        "1/#a",
+        map(vec![("UserModes", Variant::Map(modes))]),
+    );
+    check(&mut h);
+    h.sync(b"IrcUser", "1/me", b"partChannel", vec!["#b".into()]);
+    check(&mut h);
+    assert_eq!(h.state.memberships, 1);
 }
 
 #[test]

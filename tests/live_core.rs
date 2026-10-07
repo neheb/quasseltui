@@ -30,12 +30,11 @@ fn options() -> Option<ConnectionOptions> {
     Some(opts)
 }
 
+/// Needs a real core: `QUASSEL_TEST_HOST=… cargo test -- --ignored`.
 #[tokio::test]
+#[ignore = "needs a live core (set QUASSEL_TEST_HOST and run with --ignored)"]
 async fn logs_in_and_receives_session_state() {
-    let Some(opts) = options() else {
-        eprintln!("QUASSEL_TEST_HOST not set; skipping live-core test");
-        return;
-    };
+    let opts = options().expect("QUASSEL_TEST_HOST must be set for the live-core test");
     let mut client = QuasselClient::connect(opts);
     let mut state = ClientState::default();
     let mut opened = false;

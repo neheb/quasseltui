@@ -313,3 +313,27 @@ fn second_flags_reject_what_duration_cant_hold() {
     assert!(parse("--port", "4242").is_ok());
     assert!(parse("--duration", "0").is_ok());
 }
+
+#[test]
+fn debug_output_redacts_passwords() {
+    let creds = CredentialArgs {
+        user: Some("me".into()),
+        password: Some("hunter2".into()),
+    };
+    assert!(!format!("{creds:?}").contains("hunter2"));
+    let resolved = resolve_connection(
+        &ConnectArgs {
+            host: Some("h".into()),
+            port: Some(1),
+            ..ConnectArgs::default()
+        },
+        Some(&creds),
+        || Ok(None),
+    )
+    .unwrap();
+    let shown = format!("{resolved:?}");
+    assert!(
+        !shown.contains("hunter2") && shown.contains("<redacted>"),
+        "{shown}"
+    );
+}

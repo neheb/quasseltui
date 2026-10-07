@@ -131,7 +131,7 @@ pub struct ConnectArgs {
     pub connect_timeout: Option<f64>,
 }
 
-#[derive(Debug, Clone, Default, Args)]
+#[derive(Clone, Default, Args)]
 pub struct CredentialArgs {
     /// Username (env: QUASSEL_USER; config: [server:*] user; prompted if unset)
     #[arg(long)]
@@ -188,8 +188,17 @@ pub struct DumpArgs {
     pub max_messages: usize,
 }
 
+impl std::fmt::Debug for CredentialArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CredentialArgs")
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
 /// Connection settings after merging CLI flags with the config file.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Resolved {
     pub host: String,
     pub port: u16,
@@ -199,6 +208,21 @@ pub struct Resolved {
     pub insecure: bool,
     pub cafile: Option<String>,
     pub connect_timeout: f64,
+}
+
+impl std::fmt::Debug for Resolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Resolved")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("no_tls", &self.no_tls)
+            .field("insecure", &self.insecure)
+            .field("cafile", &self.cafile)
+            .field("connect_timeout", &self.connect_timeout)
+            .finish()
+    }
 }
 
 impl Resolved {
@@ -356,9 +380,9 @@ pub fn resolve_connection(
 
 /// Read a password without echo. `Ok(None)` if the user aborted (Ctrl+C,
 /// Ctrl+D, EOF).
-fn prompt_password(prompt: &str) -> io::Result<Option<String>> {
+async fn prompt_password(prompt: &str) -> io::Result<Option<String>> {
     use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+    use tokio::signal::unix::{SignalKind, signal};
 
     let mut stderr = io::stderr();
     write!(stderr, "{prompt}")?;
@@ -371,9 +395,10 @@ fn prompt_password(prompt: &str) -> io::Result<Option<String>> {
         return Ok(Some(line.trim_end_matches(['\n', '\r']).to_string()));
     }
     // Raw mode turns Ctrl+C into a key press, so it can't kill us with the
-    // terminal's echo still switched off.
-    enable_raw_mode()?;
-    let result = (|| -> io::Result<Option<String>> {
+    // terminal's echo still switched off. The guard restores the terminal
+    // however this ends, including this future being dropped.
+    let raw = RawMode::enable()?;
+    let read_password = tokio::task::spawn_blocking(|| -> io::Result<Option<String>> {
         let mut password = String::new();
         loop {
             let Event::Key(key) = read()? else { continue };
@@ -393,14 +418,45 @@ fn prompt_password(prompt: &str) -> io::Result<Option<String>> {
                 _ => {}
             }
         }
-    })();
-    disable_raw_mode()?;
-    writeln!(stderr)?;
-    result
+    });
+    // A signal would otherwise kill us in raw mode: restore, then exit as
+    // the signal would have (128 + its number).
+    let mut term = signal(SignalKind::terminate())?;
+    let mut hup = signal(SignalKind::hangup())?;
+    let mut int = signal(SignalKind::interrupt())?;
+    let code = tokio::select! {
+        result = read_password => {
+            drop(raw);
+            writeln!(stderr)?;
+            return result.map_err(io::Error::other)?;
+        }
+        _ = term.recv() => 143,
+        _ = hup.recv() => 129,
+        _ = int.recv() => 130,
+    };
+    drop(raw);
+    let _ = writeln!(stderr);
+    std::process::exit(code);
+}
+
+/// Raw terminal mode for as long as this lives.
+struct RawMode;
+
+impl RawMode {
+    fn enable() -> io::Result<Self> {
+        crossterm::terminal::enable_raw_mode()?;
+        Ok(Self)
+    }
+}
+
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
 }
 
 /// User and password from flags, config, environment, or a prompt.
-fn credentials(command: &str, resolved: &Resolved) -> Result<(String, String), ExitCode> {
+async fn credentials(command: &str, resolved: &Resolved) -> Result<(String, String), ExitCode> {
     let user = resolved
         .user
         .clone()
@@ -420,7 +476,7 @@ fn credentials(command: &str, resolved: &Resolved) -> Result<(String, String), E
                 .filter(|p| !p.is_empty())
         }) {
         Some(p) => p,
-        None => match prompt_password(&format!("Password for {user}@{}: ", resolved.host)) {
+        None => match prompt_password(&format!("Password for {user}@{}: ", resolved.host)).await {
             Ok(Some(p)) => p,
             Ok(None) | Err(_) => {
                 eprintln!("\n{command}: aborted at password prompt");
@@ -523,14 +579,18 @@ pub fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    match cli.mode {
+    let code = match cli.mode {
         Mode::UiDemo => runtime.block_on(run_ui_demo()),
         Mode::Ui(args) => runtime.block_on(run_ui(args)),
         Mode::ProbeOnly(args) => interruptible(&runtime, probe_only(args)),
         Mode::LoginOnly(args) => interruptible(&runtime, login_only(args)),
         Mode::StreamOnly(args) => interruptible(&runtime, stream_only(args)),
         Mode::DumpState(args) => interruptible(&runtime, dump_state(args)),
-    }
+    };
+    // Don't wait for blocking threads: an interrupted password prompt
+    // leaves one parked in a terminal read until a key is pressed.
+    runtime.shutdown_background();
+    code
 }
 
 /// Headless commands run for a while by design; Ctrl+C is a normal way to
@@ -631,7 +691,7 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
         Ok(d) => d,
         Err(code) => return code,
     };
-    let (user, password) = match credentials("ui", &resolved) {
+    let (user, password) = match credentials("ui", &resolved).await {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -824,7 +884,7 @@ async fn login_only(args: LoginArgs) -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
-    let (user, password) = match credentials("login-only", &resolved) {
+    let (user, password) = match credentials("login-only", &resolved).await {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1004,7 +1064,7 @@ async fn stream_only(args: StreamArgs) -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
-    let (user, password) = match credentials("stream-only", &resolved) {
+    let (user, password) = match credentials("stream-only", &resolved).await {
         Ok(c) => c,
         Err(code) => return code,
     };
@@ -1140,7 +1200,7 @@ async fn dump_state(args: DumpArgs) -> ExitCode {
         Ok(r) => r,
         Err(code) => return code,
     };
-    let (user, password) = match credentials("dump-state", &resolved) {
+    let (user, password) = match credentials("dump-state", &resolved).await {
         Ok(c) => c,
         Err(code) => return code,
     };

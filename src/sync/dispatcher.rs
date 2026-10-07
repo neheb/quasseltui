@@ -93,6 +93,7 @@ impl Dispatcher {
         // the last one would otherwise merge into them.
         state.users.clear();
         state.channels.clear();
+        state.memberships = 0;
         Self::prune_to_session(state, session, out);
         out.push(ClientEvent::SessionOpened {
             session: Arc::clone(session),
@@ -206,16 +207,40 @@ impl Dispatcher {
         )
     }
 
+    /// How many more names the networks' nick and channel lists may hold,
+    /// across all networks.
+    fn network_list_room(state: &ClientState) -> usize {
+        let used: usize = state
+            .networks
+            .values()
+            .map(|n| n.users.len() + n.channels.len())
+            .sum();
+        MAX_ROSTER_OBJECTS.saturating_sub(used)
+    }
+
     /// How many more channel memberships may be added, not counting
     /// `replacing` (a channel whose roster is about to be replaced).
     fn membership_room(state: &ClientState, replacing: Option<&str>) -> usize {
-        let used: usize = state
-            .channels
-            .iter()
-            .filter(|(name, _)| Some(name.as_str()) != replacing)
-            .map(|(_, channel)| channel.user_modes.len())
-            .sum();
-        MAX_MEMBERSHIPS.saturating_sub(used)
+        let replaced = replacing
+            .and_then(|name| state.channels.get(name))
+            .map_or(0, |channel| channel.user_modes.len());
+        MAX_MEMBERSHIPS.saturating_sub(state.memberships.saturating_sub(replaced))
+    }
+
+    /// Apply `update` to a channel (created if allowed), keeping the
+    /// membership count in step.
+    fn update_channel(
+        state: &mut ClientState,
+        object_name: &str,
+        update: impl FnOnce(&mut IrcChannel),
+    ) {
+        let Some(channel) = Self::channel_entry(state, object_name) else {
+            return;
+        };
+        let before = channel.user_modes.len();
+        update(channel);
+        let after = channel.user_modes.len();
+        state.memberships = (state.memberships + after).saturating_sub(before);
     }
 
     fn channel_entry<'s>(
@@ -257,10 +282,11 @@ impl Dispatcher {
         let params = msg.params.as_slice();
         match msg.class_name.as_slice() {
             network::CLASS_NAME => {
+                let room = Self::network_list_room(state);
                 let Some(network) = Self::known_network(state, &msg.object_name) else {
                     return;
                 };
-                network.handle_sync(slot, params);
+                network.handle_sync(slot, params, room);
                 let change = match slot {
                     b"setNetworkName" => NetworkChange::Name(network.network_name.clone()),
                     b"setCurrentServer" => {
@@ -284,9 +310,9 @@ impl Dispatcher {
             }
             irc_channel::CLASS_NAME => {
                 let room = Self::membership_room(state, None);
-                if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
+                Self::update_channel(state, &msg.object_name, |channel| {
                     channel.handle_sync(slot, params, room);
-                }
+                });
             }
             irc_user::CLASS_NAME => {
                 let Some(user) = Self::user_entry(state, &msg.object_name) else {
@@ -332,6 +358,19 @@ impl Dispatcher {
                     .buffer_syncer
                     .get_or_insert_with(BufferSyncer::new)
                     .handle_sync(slot, params);
+                // A marker moved elsewhere (another client, or the core
+                // echoing ours) moves here too; -1 means none.
+                if slot == b"setMarkerLine"
+                    && let [bid, mid] = params
+                    && let (Some(bid), Some(mid)) =
+                        (bid.coerce_i64().and_then(i32_id), mid.coerce_i64())
+                {
+                    if mid < 0 {
+                        state.read_markers.remove(&BufferId(bid));
+                    } else {
+                        state.read_markers.insert(BufferId(bid), MsgId(mid));
+                    }
+                }
                 Self::drain_buffer_syncer(state, out);
             }
             backlog_manager::CLASS_NAME => {
@@ -359,14 +398,16 @@ impl Dispatcher {
         let Some(chan) = state.channels.get_mut(&key) else {
             return;
         };
-        chan.user_modes.remove(nick);
+        if chan.user_modes.remove(nick).is_some() {
+            state.memberships = state.memberships.saturating_sub(1);
+        }
         // Our own part means the core stops syncing the channel: tear it
         // down, or the stale roster merges ghosts into the seed on rejoin.
         if let Some(network) = state.networks.get_mut(&NetworkId(network_id))
             && !network.my_nick.is_empty()
             && nick == network.my_nick
         {
-            chan.user_modes.clear();
+            state.memberships = state.memberships.saturating_sub(chan.user_modes.len());
             network.channels.remove(&chan.name);
             state.channels.remove(&key);
         }
@@ -383,8 +424,8 @@ impl Dispatcher {
         nick: &str,
     ) {
         for chan in state.channels.values_mut() {
-            if chan.network_id == network_id {
-                chan.user_modes.remove(nick);
+            if chan.network_id == network_id && chan.user_modes.remove(nick).is_some() {
+                state.memberships = state.memberships.saturating_sub(1);
             }
         }
         if let Some(network) = state.networks.get_mut(&NetworkId(network_id)) {
@@ -396,6 +437,7 @@ impl Dispatcher {
     fn clear_network_rosters(&mut self, state: &mut ClientState, network_id: NetworkId) {
         state.users.retain(|_, u| u.network_id != network_id.0);
         state.channels.retain(|_, c| c.network_id != network_id.0);
+        state.recount_memberships();
         if let Some(network) = state.networks.get_mut(&network_id) {
             network.users.clear();
             network.channels.clear();
@@ -505,10 +547,11 @@ impl Dispatcher {
     ) {
         match msg.class_name.as_slice() {
             network::CLASS_NAME => {
+                let room = Self::network_list_room(state);
                 let Some(network) = Self::known_network(state, &msg.object_name) else {
                     return;
                 };
-                network.apply_init_data(&msg.init_data);
+                network.apply_init_data(&msg.init_data, room);
                 let network_id = NetworkId(network.network_id());
                 let name = network.network_name.clone();
                 // Moved out: the seeds are only needed to materialize the
@@ -526,9 +569,7 @@ impl Dispatcher {
                 for (channel, fields) in &channels_seed {
                     let key = format!("{}/{channel}", network_id.0);
                     let room = Self::membership_room(state, Some(&key));
-                    if let Some(chan) = Self::channel_entry(state, &key) {
-                        chan.apply_init_data(fields, room);
-                    }
+                    Self::update_channel(state, &key, |chan| chan.apply_init_data(fields, room));
                 }
                 // The name was usually unknown at session time.
                 out.push(ClientEvent::NetworkUpdated {
@@ -577,9 +618,9 @@ impl Dispatcher {
             }
             irc_channel::CLASS_NAME => {
                 let room = Self::membership_room(state, Some(&msg.object_name));
-                if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
+                Self::update_channel(state, &msg.object_name, |channel| {
                     channel.apply_init_data(&msg.init_data, room);
-                }
+                });
             }
             irc_user::CLASS_NAME => {
                 if let Some(user) = Self::user_entry(state, &msg.object_name) {
@@ -657,6 +698,7 @@ impl Dispatcher {
         }
         state.users.retain(|_, u| u.network_id != nid.0);
         state.channels.retain(|_, c| c.network_id != nid.0);
+        state.recount_memberships();
         let doomed: Vec<BufferId> = state
             .buffers
             .values()
@@ -771,7 +813,10 @@ impl Dispatcher {
                     {
                         network.channels.insert(channel.name.clone());
                     }
-                    state.channels.insert(new_name, channel);
+                    if let Some(replaced) = state.channels.insert(new_name, channel) {
+                        state.memberships =
+                            state.memberships.saturating_sub(replaced.user_modes.len());
+                    }
                 }
             }
             other => tracing::debug!(
@@ -799,8 +844,10 @@ impl Dispatcher {
         for chan in state.channels.values_mut() {
             if chan.network_id == network_id
                 && let Some(mode) = chan.user_modes.remove(old_nick)
+                // Renamed onto a nick already listed: one member fewer.
+                && chan.user_modes.insert(new_nick.to_string(), mode).is_some()
             {
-                chan.user_modes.insert(new_nick.to_string(), mode);
+                state.memberships = state.memberships.saturating_sub(1);
             }
         }
     }
@@ -821,6 +868,15 @@ impl Dispatcher {
                 tracing::warn!(
                     "buffer cap reached; dropping message for new buffer {}",
                     info.buffer_id
+                );
+                return;
+            }
+            // Like roster objects: only on networks we know of.
+            if !state.networks.contains_key(&info.network_id) {
+                tracing::debug!(
+                    "dropping message for buffer {} on unknown network {}",
+                    info.buffer_id,
+                    info.network_id
                 );
                 return;
             }

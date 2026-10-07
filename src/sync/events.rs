@@ -14,6 +14,7 @@ use crate::protocol::types::{
     BufferId, BufferType, IdentityId, Message, MessageFlags, MessageType, MsgId, NetworkId,
 };
 use crate::sync::network::NetworkConnectionState;
+use crate::util::text::truncate_bytes;
 
 /// One IRC message as the UI sees it: the subset of `Message` worth
 /// rendering.
@@ -30,6 +31,13 @@ pub struct IrcMessage {
     pub contents: String,
 }
 
+/// Longest message body kept. IRC lines are at most 512 bytes and Quassel
+/// splits longer input, but one decoded string may be 16 MiB; history is
+/// capped in lines, so each line needs a size bound too.
+pub const MAX_CONTENTS_BYTES: usize = 8 * 1024;
+/// Longest sender (`nick!user@host`) and prefix string kept.
+pub const MAX_SENDER_BYTES: usize = 1024;
+
 impl From<&Message> for IrcMessage {
     fn from(raw: &Message) -> Self {
         Self {
@@ -39,9 +47,9 @@ impl From<&Message> for IrcMessage {
             timestamp: raw.timestamp,
             kind: raw.kind,
             flags: raw.flags,
-            sender: raw.sender.clone(),
-            sender_prefixes: raw.sender_prefixes.clone(),
-            contents: raw.contents.clone(),
+            sender: truncate_bytes(&raw.sender, MAX_SENDER_BYTES),
+            sender_prefixes: truncate_bytes(&raw.sender_prefixes, MAX_SENDER_BYTES),
+            contents: truncate_bytes(&raw.contents, MAX_CONTENTS_BYTES),
         }
     }
 }
@@ -54,19 +62,6 @@ pub enum NetworkChange {
     MyNick(String),
     ConnectionState(NetworkConnectionState),
     Connected(bool),
-}
-
-impl NetworkChange {
-    /// Stable tag for the changed field.
-    pub fn field_name(&self) -> &'static str {
-        match self {
-            Self::Name(_) => "network_name",
-            Self::CurrentServer(_) => "current_server",
-            Self::MyNick(_) => "my_nick",
-            Self::ConnectionState(_) => "connection_state",
-            Self::Connected(_) => "is_connected",
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

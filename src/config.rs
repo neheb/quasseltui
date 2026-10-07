@@ -54,7 +54,7 @@ const ALLOWED_SERVER_KEYS: [&str; 8] = [
 pub struct ConfigError(pub String);
 
 /// One `[server:NAME]` section. `None` means "not set here".
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct ServerConfig {
     pub name: String,
     pub host: Option<String>,
@@ -65,6 +65,22 @@ pub struct ServerConfig {
     pub insecure: Option<bool>,
     pub cafile: Option<String>,
     pub connect_timeout: Option<f64>,
+}
+
+impl std::fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("name", &self.name)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("tls", &self.tls)
+            .field("insecure", &self.insecure)
+            .field("cafile", &self.cafile)
+            .field("connect_timeout", &self.connect_timeout)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,11 +145,14 @@ impl Config {
 /// file doesn't exist: that's the first-run case, not an error.
 pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     let path = path.map_or_else(default_config_path, Path::to_path_buf);
-    if !path.exists() {
-        return Ok(None);
-    }
     let shown = path.display();
-    let text = std::fs::read_to_string(&path).map_err(|e| ConfigError(format!("{shown}: {e}")))?;
+    // Only a missing file means "no config": one we can't read (say, a
+    // permission problem) is an error, not a silent fallback.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(ConfigError(format!("{shown}: {e}"))),
+    };
     let sections = parse_ini(&text).map_err(|e| ConfigError(format!("{shown}: {e}")))?;
 
     let defaults = sections.get("DEFAULT").cloned().unwrap_or_default();
@@ -163,8 +182,8 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
             continue;
         }
         if section == MAIN_SECTION {
-            // Only the section's own keys: [DEFAULT] entries are meant for
-            // the server sections.
+            // Only the section's own keys: [DEFAULT] feeds the server
+            // sections, and isn't merged in here.
             for key in values.keys() {
                 if !ALLOWED_MAIN_KEYS.contains(&key.as_str()) {
                     return Err(ConfigError(format!(
@@ -173,7 +192,7 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
                     )));
                 }
             }
-            let merged = with_defaults(values);
+            let merged = values;
             let value = merged
                 .get("default_server")
                 .map(|v| v.trim().to_string())
@@ -396,6 +415,16 @@ mod tests {
     }
 
     #[test]
+    fn debug_output_redacts_the_password() {
+        let cfg = load_ok("[server:home]\nhost = x\npassword = hunter2\n");
+        let shown = format!("{cfg:?}");
+        assert!(
+            !shown.contains("hunter2") && shown.contains("<redacted>"),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn readable_password_files_warn() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -413,6 +442,25 @@ mod tests {
         // No password, nothing to protect.
         let cfg = load_ok("[server:home]\nhost = x\n");
         assert!(cfg.permission_warning().is_none());
+    }
+
+    #[test]
+    fn unreadable_config_is_an_error_not_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "[server:home]\nhost = x\n");
+        // No search permission on the directory: the file can't even be
+        // stat'ed, which `Path::exists` reported as "no config".
+        let locked = std::fs::Permissions::from_mode(0o000);
+        std::fs::set_permissions(dir.path(), locked).unwrap();
+        let result = load(Some(&path));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        if std::fs::metadata(&path).is_ok() && result.is_ok() {
+            // Running as root: permissions don't apply.
+            return;
+        }
+        let err = result.unwrap_err();
+        assert!(err.0.contains("ermission denied"), "{err}");
     }
 
     #[test]

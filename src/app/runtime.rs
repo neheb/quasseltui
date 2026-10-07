@@ -30,6 +30,7 @@ use crate::app::view::{self, Areas};
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, QuasselClient, Request};
 use crate::protocol::connection::ProtocolEvent;
 use crate::protocol::types::BufferId;
+use crate::util::text::is_unsafe;
 
 /// Builds a fresh client over the same credentials (for Ctrl+R).
 pub type ClientFactory = Box<dyn Fn() -> QuasselClient + Send>;
@@ -427,11 +428,12 @@ fn alert(title: &str, body: &str) {
 }
 
 /// Core-supplied text made safe inside an OSC string: no control
-/// characters (which could end the sequence and inject others) and no `;`
+/// characters (which could end the sequence and inject others), no bidi
+/// controls, and no `;`
 /// (the field separator), cut to `max` characters.
 fn notification_text(text: &str, max: usize) -> String {
     text.chars()
-        .filter(|c| !c.is_control())
+        .filter(|c| !c.is_control() && !is_unsafe(*c))
         .map(|c| if c == ';' { ',' } else { c })
         .take(max)
         .collect()

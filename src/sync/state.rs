@@ -24,7 +24,8 @@ pub const DEFAULT_MAX_MESSAGES_PER_BUFFER: usize = 5000;
 /// with the per-buffer cap, this bounds history memory overall.
 pub use crate::protocol::messages::MAX_BUFFERS;
 
-#[derive(Debug, Clone)]
+/// Not `Clone`: a copy would duplicate every buffer's history.
+#[derive(Debug)]
 pub struct ClientState {
     pub peer_features: Features,
     pub networks: BTreeMap<NetworkId, Network>,
@@ -37,6 +38,9 @@ pub struct ClientState {
     pub channels: BTreeMap<String, IrcChannel>,
     /// IrcUser objects by object name (`"<netId>/<nick>"`).
     pub users: BTreeMap<String, IrcUser>,
+    /// Members across all channels, kept in step by the dispatcher so the
+    /// membership cap is checked without walking every channel.
+    pub(crate) memberships: usize,
     pub buffer_syncer: Option<BufferSyncer>,
     /// Buffers whose backlog was already requested this session.
     pub backlog_requested: HashSet<BufferId>,
@@ -64,6 +68,7 @@ impl ClientState {
             identities: BTreeMap::new(),
             channels: BTreeMap::new(),
             users: BTreeMap::new(),
+            memberships: 0,
             buffer_syncer: None,
             backlog_requested: HashSet::new(),
             max_messages_per_buffer,
@@ -75,6 +80,11 @@ impl ClientState {
     pub fn network_for_buffer(&self, buffer_id: BufferId) -> Option<&Network> {
         let info = self.buffers.get(&buffer_id)?;
         self.networks.get(&info.network_id)
+    }
+
+    /// Recount channel members, after a bulk change to the rosters.
+    pub(crate) fn recount_memberships(&mut self) {
+        self.memberships = self.channels.values().map(|c| c.user_modes.len()).sum();
     }
 
     /// The channel object behind a channel buffer. Buffer and object names

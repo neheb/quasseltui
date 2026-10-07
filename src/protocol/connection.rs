@@ -27,7 +27,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
@@ -235,6 +235,9 @@ struct Outbound {
     ack: Option<oneshot::Sender<Result<()>>>,
 }
 
+/// Plain data cells. Locks are held only to copy a value in or out, and a
+/// poisoned one is used anyway: the terminal `Disconnected` must not depend
+/// on no task ever having panicked.
 struct Shared {
     state: Mutex<ConnState>,
     features: Mutex<Features>,
@@ -244,11 +247,11 @@ struct Shared {
 
 impl Shared {
     fn set_state(&self, state: ConnState) {
-        *self.state.lock().expect("state lock") = state;
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner) = state;
     }
 
     fn state(&self) -> ConnState {
-        *self.state.lock().expect("state lock")
+        *self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -267,7 +270,11 @@ impl ConnectionHandle {
     }
 
     pub fn peer_features(&self) -> Features {
-        *self.shared.features.lock().expect("features lock")
+        *self
+            .shared
+            .features
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn check_connected(&self) -> Result<()> {
@@ -317,7 +324,7 @@ impl ConnectionHandle {
         self.shared
             .undelivered
             .lock()
-            .expect("undelivered lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
 
@@ -417,7 +424,10 @@ async fn send_terminal(
         Ok(Err(_)) => return,
         Err(_) => {
             tracing::warn!("event consumer stalled; leaving the disconnect for it to collect");
-            *shared.undelivered.lock().expect("undelivered lock") = Some(event);
+            *shared
+                .undelivered
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(event);
             return;
         }
     };
@@ -489,7 +499,11 @@ impl Runner {
             }
         };
 
-        *self.shared.features.lock().expect("features lock") = features;
+        *self
+            .shared
+            .features
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = features;
         self.shared.set_state(ConnState::Connected);
         let ready = ProtocolEvent::SessionReady {
             session,
@@ -656,7 +670,11 @@ impl Runner {
         mut writer_failed: oneshot::Receiver<Error>,
     ) -> (Option<String>, Option<Error>) {
         let liveness = self.options.liveness_timeout;
-        let features = *self.shared.features.lock().expect("features lock");
+        let features = *self
+            .shared
+            .features
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let mut consecutive_failures = 0;
         loop {
             let read = async {

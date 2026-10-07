@@ -7,9 +7,15 @@
 //! misbehaving peer sent; the escaped form is printable, which makes the
 //! sanitizer idempotent.
 
-/// C0 controls, DEL, and C1 controls (the 8-bit CSI range).
-fn is_unsafe(c: char) -> bool {
-    matches!(c as u32, 0x00..=0x1f | 0x7f..=0x9f)
+/// C0 controls, DEL, C1 controls (the 8-bit CSI range), and the bidi
+/// controls that reorder the text after them, which can make a line read
+/// as something it isn't ("Trojan Source"). Zero-width joiners stay: emoji
+/// and several scripts need them.
+pub fn is_unsafe(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00..=0x1f | 0x7f..=0x9f | 0x061c | 0x200e | 0x200f | 0x202a..=0x202e | 0x2066..=0x2069
+    )
 }
 
 /// Escape control characters as `\xNN`.
@@ -71,6 +77,20 @@ pub fn strip_mirc_formatting(text: &str) -> String {
     out
 }
 
+/// `text` cut to at most `max_bytes` bytes on a character boundary, with
+/// `…` (counted in) marking the cut.
+pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
+    const MARK: &str = "…";
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let mut end = max_bytes.saturating_sub(MARK.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{MARK}", &text[..end])
+}
+
 /// Sanitize and cap length, for untrusted text in notices and banners.
 /// Sanitizing can quadruple the length, so a runaway reason is truncated
 /// with an explicit marker.
@@ -80,9 +100,11 @@ pub fn sanitize_and_truncate(text: &str, max_chars: usize) -> String {
     if cleaned.chars().count() <= max_chars {
         return cleaned;
     }
-    // The marker counts toward the cap.
-    let keep = max_chars.saturating_sub(MARKER.len());
-    let mut out: String = cleaned.chars().take(keep).collect();
+    // The marker counts toward the cap; a cap too small for it just cuts.
+    if max_chars < MARKER.len() {
+        return cleaned.chars().take(max_chars).collect();
+    }
+    let mut out: String = cleaned.chars().take(max_chars - MARKER.len()).collect();
     out.push_str(MARKER);
     out
 }
@@ -90,6 +112,23 @@ pub fn sanitize_and_truncate(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bidi_controls_are_escaped_but_joiners_kept() {
+        // "alice" with a right-to-left override would render reversed.
+        assert_eq!(sanitize_terminal("ali\u{202e}ecila"), "ali\\x202eecila");
+        assert_eq!(sanitize_terminal("a\u{2066}b\u{2069}"), "a\\x2066b\\x2069");
+        let family = "\u{1f469}\u{200d}\u{1f467}";
+        assert_eq!(sanitize_terminal(family), family);
+    }
+
+    #[test]
+    fn truncate_bytes_cuts_on_a_char_boundary() {
+        assert_eq!(truncate_bytes("short", 10), "short");
+        let cut = truncate_bytes("ééééé", 7); // 2 bytes each
+        assert_eq!(cut, "éé…");
+        assert!(cut.len() <= 7);
+    }
 
     #[test]
     fn safe_text_passes_through() {
@@ -149,6 +188,7 @@ mod tests {
         let cut = sanitize_and_truncate(&"x".repeat(50), 20);
         assert_eq!(cut, "xxxxxx...[truncated]");
         assert_eq!(cut.chars().count(), 20);
+        assert_eq!(sanitize_and_truncate("abcdef", 3), "abc");
         assert_eq!(sanitize_and_truncate("\x1b", 400), "\\x1b");
     }
 }

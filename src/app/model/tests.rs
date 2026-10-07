@@ -497,9 +497,13 @@ fn send_failure_restores_text_and_notifies() {
     // Text the user already started typing is not overwritten; the notice
     // says where the failed line went.
     app.input.set_value("new");
+    app.input.remember("old");
     app.send_failed("old".into(), "x");
     assert_eq!(app.input.value, "new");
     assert!(app.notices.last().unwrap().contains("Up recalls it"));
+    // A pasted line was never in the history: no false promise.
+    app.send_failed("pasted".into(), "x");
+    assert!(!app.notices.last().unwrap().contains("Up recalls"));
 }
 
 #[test]
@@ -662,8 +666,61 @@ fn input_editing_keys() {
     assert_eq!(app.input.value, "ello ");
     app.on_key(ctrl('u'));
     assert_eq!(app.input.value, "");
-    app.on_paste("multi\nline");
-    assert_eq!(app.input.value, "multi line");
+    // A single line with a trailing newline stays one line.
+    app.on_paste("one line\n");
+    assert_eq!(app.input.value, "one line ");
+    assert!(app.pending_paste.is_none());
+}
+
+#[test]
+fn multi_line_paste_waits_for_confirmation() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    typing(&mut app);
+    type_text(&mut app, "see: ");
+    app.on_paste("fn main() {\r\n\n/quit\n}");
+    // What was typed joins the first line; blank lines are dropped.
+    let paste = app.pending_paste.clone().unwrap();
+    assert_eq!(paste.lines, ["see: fn main() {", "/quit", "}"]);
+    assert!(app.input.value.is_empty());
+    // Other keys do nothing while it waits.
+    assert!(app.on_key(key(KeyCode::Char('x'))).is_empty());
+    assert!(app.input.value.is_empty());
+
+    // Esc puts the input back as it was.
+    app.on_key(key(KeyCode::Esc));
+    assert!(app.pending_paste.is_none());
+    assert_eq!(app.input.value, "see: ");
+    assert_eq!(app.focus, Focus::Input);
+
+    // Enter sends each line, in order; a leading `/` is sent as text.
+    app.on_paste("a\n/quit");
+    let info = app.state.buffers[&BufferId(10)].clone();
+    let send = |text: &str| Effect::SendInput {
+        buffer: info.clone(),
+        text: text.into(),
+    };
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        [send("see: a"), send("/say /quit")]
+    );
+    assert!(app.pending_paste.is_none());
+    assert!(app.input.value.is_empty());
+}
+
+#[test]
+fn a_disconnect_cancels_a_pending_paste() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    typing(&mut app);
+    type_text(&mut app, "draft");
+    app.on_paste("\nline two");
+    assert!(app.pending_paste.is_some());
+    app.on_client_event(&disconnected("gone"));
+    assert!(app.pending_paste.is_none());
+    app.reconnect();
+    app.on_client_event(&opened());
+    assert_eq!(app.input.value, "draft");
 }
 
 #[test]

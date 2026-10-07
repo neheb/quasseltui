@@ -270,6 +270,16 @@ impl InputBar {
     }
 }
 
+/// A multi-line paste waiting for the user to confirm sending it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPaste {
+    /// The lines to send, blank ones dropped.
+    pub lines: Vec<String>,
+    /// The input as it was before the paste, restored on cancel.
+    previous: String,
+    previous_cursor: usize,
+}
+
 /// An in-progress Tab completion: repeated Tabs cycle through `candidates`,
 /// replacing what the previous Tab inserted.
 #[derive(Debug, Clone)]
@@ -330,6 +340,8 @@ pub struct App {
     pub(crate) last_alert: HashMap<BufferId, Instant>,
     /// Where to land when the session opens, if it has this buffer.
     start_buffer: Option<BufferId>,
+    /// A multi-line paste awaiting Enter (send) or Esc (cancel).
+    pub pending_paste: Option<PendingPaste>,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     session_opened: bool,
@@ -367,6 +379,7 @@ impl App {
             terminal_focused: true,
             last_alert: HashMap::new(),
             start_buffer: None,
+            pending_paste: None,
             completion: None,
             session_opened: false,
             presession_fatal: true,
@@ -715,6 +728,10 @@ impl App {
             self.notify(&format!("Disconnected: {reason}"), Severity::Error);
         }
         self.input.disabled = true;
+        // An unconfirmed paste can't be sent now; keep what was typed.
+        if let Some(paste) = self.pending_paste.take() {
+            self.input.set_value(paste.previous);
+        }
         if !self.input.value.is_empty() {
             self.pending_input = Some(std::mem::take(&mut self.input.value));
             self.input.cursor = 0;
@@ -858,7 +875,8 @@ impl App {
         tracing::warn!("send_input failed: {error}");
         // Submitted lines are in the input history, so one that can't go
         // back in the input is still a press of Up away.
-        let hint = if self.restore_input(text) {
+        let in_history = self.input.history.contains(&text);
+        let hint = if self.restore_input(text) || !in_history {
             ""
         } else {
             " (Up recalls it)"
@@ -1278,14 +1296,73 @@ impl App {
         self.completion = None;
     }
 
+    /// A paste. One line goes into the input; several, merged with what
+    /// was typed around the cursor, wait for confirmation to be sent as
+    /// separate lines, like Quassel's own client does.
     pub fn on_paste(&mut self, text: &str) {
         self.cancel_pending();
-        if self.focus == Focus::Input && !self.input.disabled {
-            let flat: String = text
+        if self.focus != Focus::Input || self.input.disabled || self.pending_paste.is_some() {
+            return;
+        }
+        let previous = self.input.value.clone();
+        let previous_cursor = self.input.cursor;
+        self.input.insert(text);
+        let lines: Vec<String> = self
+            .input
+            .value
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect();
+        if lines.len() <= 1 {
+            // A trailing newline or blank lines: keep it on one line.
+            let flat: String = self
+                .input
+                .value
                 .chars()
                 .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
                 .collect();
-            self.input.insert(&flat);
+            let cursor = self.input.cursor;
+            self.input.set_value(flat);
+            self.input.cursor = cursor;
+            return;
+        }
+        self.input.set_value("");
+        self.pending_paste = Some(PendingPaste {
+            lines,
+            previous,
+            previous_cursor,
+        });
+    }
+
+    /// Enter or Esc on a pending paste.
+    fn paste_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Enter => {
+                let Some(paste) = self.pending_paste.take() else {
+                    return Vec::new();
+                };
+                let mut effects = Vec::new();
+                for line in paste.lines {
+                    // Pasted text is text: a line that happens to start
+                    // with `/` must not run as a command.
+                    let line = if line.starts_with('/') {
+                        format!("/say {line}")
+                    } else {
+                        line
+                    };
+                    effects.extend(self.line_submitted(line));
+                }
+                effects
+            }
+            KeyCode::Esc => {
+                if let Some(paste) = self.pending_paste.take() {
+                    self.input.set_value(paste.previous);
+                    self.input.cursor = paste.previous_cursor;
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -1300,6 +1377,9 @@ impl App {
         }
         // Any other key ends a Tab completion.
         self.completion = None;
+        if self.pending_paste.is_some() && !(ctrl && key.code == KeyCode::Char('q')) {
+            return self.paste_key(key);
+        }
 
         if self.show_help {
             if matches!(

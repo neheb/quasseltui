@@ -281,6 +281,21 @@ fn render_input(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let inner = area.inner(Margin::new(1, 1));
     let width = usize::from(inner.width.max(1));
 
+    if let Some(paste) = &app.pending_paste {
+        let target = app
+            .active_buffer_id
+            .and_then(|id| app.state.buffers.get(&id))
+            .map_or_else(String::new, |info| format!(" to {}", buffer_label(info)));
+        let prompt = format!(
+            "Send {} pasted lines{target}? Enter sends · Esc cancels",
+            paste.lines.len()
+        );
+        let prompt = Paragraph::new(Span::styled(truncate(&prompt, width), theme.accent_style()))
+            .block(input_block);
+        frame.render_widget(prompt, area);
+        return;
+    }
+
     if app.input.value.is_empty() {
         let placeholder = Paragraph::new(Span::styled(
             truncate(&app.input.placeholder, width),
@@ -452,6 +467,16 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn pending_paste_shows_a_prompt() {
+        let mut app = App::new(build_demo_state(), false, false);
+        app.set_focus(Focus::Input);
+        app.on_paste("one\ntwo\nthree");
+        let screen = draw(&mut app, 100, 20);
+        assert!(screen.contains("Send 3 pasted lines to #"), "{screen}");
+        assert!(screen.contains("Enter sends · Esc cancels"));
     }
 
     #[test]

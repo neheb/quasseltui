@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Multi-line paste** is sent as separate lines after a confirmation
+  (`Enter` sends, `Esc` cancels) instead of being flattened into one.
+  Pasted lines starting with `/` go out as text (`/say`), never as
+  commands.
 - **Starts where you left off**: the buffer active at exit is remembered
   per account (in `~/.local/state/quasseltui/last-buffer`) and opened on
   the next start, instead of the first network's status buffer.

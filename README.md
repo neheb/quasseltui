@@ -113,6 +113,7 @@ while you're in it.
 | `PgUp` / `PgDn`, mouse wheel | Scroll, in either mode |
 | `Up` / `Down` (typing) | Recall previously sent lines |
 | `Enter` (empty input bar) | Move the read marker to the newest message |
+| Paste several lines | Asks first: `Enter` sends them as separate lines, `Esc` cancels. Lines starting with `/` are sent as text |
 | `Down` / `Up` (normal) | Move through the current channel |
 | `j` / `k` or `Shift+Down` / `Shift+Up` (normal) | Next / previous channel |
 | `Ctrl+D` / `Ctrl+U` (normal) | Scroll half a page (`Ctrl+E` / `Ctrl+Y`: one line) |

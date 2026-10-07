@@ -943,26 +943,108 @@ fn buffer_activity_reported_on_init_and_sync() {
 }
 
 #[test]
-fn reseed_respects_the_buffer_cap() {
-    // A reconnect keeps the old buffers; new ones in the session only fill
-    // what's left under the cap.
-    let mut h = Harness::new(&[1], vec![]);
-    for i in 0..MAX_BUFFERS as i32 {
-        let info = buffer(i, 1, BufferType::Channel, "#old");
-        h.state.buffers.insert(info.buffer_id, info);
+fn a_late_message_trimmed_by_the_cap_is_not_announced() {
+    let info = buffer(10, 1, BufferType::Channel, "#python");
+    let mut h = Harness::new(&[1], vec![info.clone()]);
+    h.state.max_messages_per_buffer = 3;
+    for id in 10..=12 {
+        h.rpc(
+            DISPLAY_MSG_SIGNAL,
+            vec![msg_variant(message(id, &info, "x"))],
+        );
     }
-    let s = session(
-        &[1],
-        vec![
-            buffer(0, 1, BufferType::Channel, "#renamed"),
-            buffer(-1, 1, BufferType::Channel, "#new"),
-        ],
-        vec![],
+    h.take();
+    // Older than everything kept: stored and trimmed at once.
+    h.rpc(
+        DISPLAY_MSG_SIGNAL,
+        vec![msg_variant(message(5, &info, "late"))],
     );
-    Dispatcher::new().seed_from_session(&mut h.state, &s, Features::empty(), &mut Vec::new());
+    assert!(h.take().is_empty());
+    let ids: Vec<_> = h.state.messages[&BufferId(10)]
+        .iter()
+        .map(|m| m.msg_id.0)
+        .collect();
+    assert_eq!(ids, [10, 11, 12]);
+    // A late one that fits in the middle still counts.
+    h.state.max_messages_per_buffer = 4;
+    h.rpc(
+        DISPLAY_MSG_SIGNAL,
+        vec![msg_variant(message(11, &info, "dup"))],
+    );
+    assert!(h.take().is_empty(), "a repeat is dropped");
+}
+
+#[test]
+fn seeding_respects_the_buffer_cap() {
+    // A SessionInit built in code skips from_map's cap; seeding has its own.
+    let buffers = (0..MAX_BUFFERS as i32 + 2)
+        .map(|i| buffer(i, 1, BufferType::Channel, "#c"))
+        .collect();
+    let h = Harness::new(&[1], buffers);
     assert_eq!(h.state.buffers.len(), MAX_BUFFERS);
-    assert_eq!(h.state.buffers[&BufferId(0)].name, "#renamed");
-    assert!(!h.state.buffers.contains_key(&BufferId(-1)));
+}
+
+#[test]
+fn reseed_drops_what_the_core_deleted_meanwhile() {
+    let kept = buffer(10, 1, BufferType::Channel, "#kept");
+    let gone = buffer(11, 1, BufferType::Channel, "#gone");
+    let on_gone_net = buffer(20, 2, BufferType::Channel, "#elsewhere");
+    let mut h = Harness::new(&[1, 2], vec![kept.clone(), gone.clone(), on_gone_net]);
+    h.rpc(
+        DISPLAY_MSG_SIGNAL,
+        vec![msg_variant(message(1, &gone, "x"))],
+    );
+    h.init(b"Identity", "7", VariantMap::new());
+    assert!(h.state.identities.contains_key(&IdentityId(7)));
+    h.take();
+
+    // Reconnect: network 2, buffer 11 and identity 7 were deleted.
+    let s = session(&[1], vec![kept], vec![]);
+    let mut events = Vec::new();
+    Dispatcher::new().seed_from_session(&mut h.state, &s, Features::empty(), &mut events);
+    assert_eq!(h.state.buffers.keys().collect::<Vec<_>>(), [&BufferId(10)]);
+    assert!(!h.state.messages.contains_key(&BufferId(11)));
+    assert!(!h.state.networks.contains_key(&NetworkId(2)));
+    assert!(h.state.identities.is_empty());
+    // The UI hears about it before the session opens.
+    let names: Vec<_> = events.iter().map(ClientEvent::name).collect();
+    let opened = names.iter().position(|n| *n == "SessionOpened").unwrap();
+    let removed: Vec<_> = names[..opened]
+        .iter()
+        .filter(|n| n.ends_with("Removed"))
+        .collect();
+    assert_eq!(
+        removed,
+        [&"BufferRemoved", &"NetworkRemoved", &"BufferRemoved"]
+    );
+}
+
+#[test]
+fn channel_memberships_share_one_budget() {
+    let mut h = Harness::new(&[1], vec![]);
+    // One huge channel uses up all but one membership.
+    let mut big = IrcChannel::new("1/#big");
+    big.user_modes = (0..MAX_MEMBERSHIPS - 1)
+        .map(|i| (format!("n{i}"), String::new()))
+        .collect();
+    h.state.channels.insert(big.object_name.clone(), big);
+    let join = |nicks: &[&str]| {
+        vec![
+            Variant::StringList(nicks.iter().map(|n| (*n).into()).collect()),
+            Variant::Null,
+        ]
+    };
+    h.sync(
+        b"IrcChannel",
+        "1/#small",
+        b"joinIrcUsers",
+        join(&["a", "b", "c"]),
+    );
+    assert_eq!(h.state.channels["1/#small"].user_modes.len(), 1);
+    // Leaving frees room again.
+    h.sync(b"IrcChannel", "1/#big", b"part", vec!["n0".into()]);
+    h.sync(b"IrcChannel", "1/#small", b"joinIrcUsers", join(&["b"]));
+    assert_eq!(h.state.channels["1/#small"].user_modes.len(), 2);
 }
 
 #[test]

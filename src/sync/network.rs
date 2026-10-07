@@ -9,7 +9,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::qt::variant::{Variant, VariantMap};
-use crate::sync::{exact_params, log_unknown_field, log_unknown_slot, nick_of, string_or_empty};
+use crate::sync::{
+    MAX_ROSTER_OBJECTS, exact_params, log_unknown_field, log_unknown_slot, nick_of, string_or_empty,
+};
 
 /// Mirror of `Network::ConnectionState`. Unknown values degrade to
 /// `Disconnected`.
@@ -127,7 +129,7 @@ impl Network {
                     let hostmask = string_or_empty(v);
                     let nick = nick_of(&hostmask);
                     if !nick.is_empty() {
-                        self.users.insert(nick.to_string());
+                        insert_capped(&mut self.users, nick.to_string(), "nick");
                     }
                 }
             }
@@ -135,7 +137,7 @@ impl Network {
                 if let Some([v]) = one() {
                     let channel = string_or_empty(v);
                     if !channel.is_empty() {
-                        self.channels.insert(channel);
+                        insert_capped(&mut self.channels, channel, "channel");
                     }
                 }
             }
@@ -189,12 +191,16 @@ impl Network {
         if let Some(users) = pick("Users", "users") {
             self.users_seed =
                 explode_parallel_arrays(users, "nick").unwrap_or_else(|| legacy_seed(users));
-            self.users.extend(self.users_seed.keys().cloned());
+            for nick in self.users_seed.keys() {
+                insert_capped(&mut self.users, nick.clone(), "nick");
+            }
         }
         if let Some(channels) = pick("Channels", "channels") {
             self.channels_seed =
                 explode_parallel_arrays(channels, "name").unwrap_or_else(|| legacy_seed(channels));
-            self.channels.extend(self.channels_seed.keys().cloned());
+            for channel in self.channels_seed.keys() {
+                insert_capped(&mut self.channels, channel.clone(), "channel");
+            }
         }
     }
 }
@@ -203,6 +209,15 @@ fn legacy_seed(map: &VariantMap) -> BTreeMap<String, VariantMap> {
     map.iter()
         .filter_map(|(k, v)| v.as_map().map(|m| (k.clone(), m.clone())))
         .collect()
+}
+
+/// Add to a network's nick or channel list, up to [`MAX_ROSTER_OBJECTS`].
+fn insert_capped(set: &mut BTreeSet<String>, name: String, what: &str) {
+    if set.len() >= MAX_ROSTER_OBJECTS && !set.contains(&name) {
+        tracing::warn!("{what} list cap reached; ignoring {name:?}");
+        return;
+    }
+    set.insert(name);
 }
 
 /// Turn `{"nick": ["alice", "bob"], "user": ["al", "bo"]}` into per-name

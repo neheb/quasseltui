@@ -483,7 +483,53 @@ fn termination_signals() -> io::Result<mpsc::UnboundedReceiver<i32>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, notification_text};
+    use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    use super::{base64, handle_terminal_event, notification_text};
+    use crate::app::demo::build_demo_state;
+    use crate::app::model::{App, Focus, TreeRow};
+    use crate::app::view::Areas;
+    use crate::protocol::types::BufferId;
+
+    fn click(column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn clicks_map_to_the_pane_and_row_under_the_pointer() {
+        let mut app = App::new(build_demo_state(), false, false);
+        app.set_focus(Focus::Log);
+        // Sidebar at x 0..20 with a border; two rows inside it.
+        let areas = Areas {
+            tree: Rect::new(0, 0, 20, 10),
+            tree_rows: vec![
+                Some(TreeRow::Buffer(BufferId(12))),
+                None,
+                Some(TreeRow::Buffer(BufferId(13))),
+            ],
+            log: Rect::new(21, 1, 50, 6),
+            input: Rect::new(20, 8, 52, 3),
+        };
+        // Row 1 is the first line inside the border.
+        handle_terminal_event(&mut app, &areas, click(3, 1));
+        assert_eq!(app.active_buffer_id, Some(BufferId(12)));
+        handle_terminal_event(&mut app, &areas, click(3, 3));
+        assert_eq!(app.active_buffer_id, Some(BufferId(13)));
+        // The border, an empty row, and past the rows do nothing.
+        for (x, y) in [(0, 1), (3, 0), (3, 2), (3, 8)] {
+            handle_terminal_event(&mut app, &areas, click(x, y));
+            assert_eq!(app.active_buffer_id, Some(BufferId(13)), "({x}, {y})");
+        }
+        // The input box starts typing.
+        handle_terminal_event(&mut app, &areas, click(30, 9));
+        assert_eq!(app.focus, Focus::Input);
+    }
 
     #[test]
     fn notification_text_cant_break_out_of_the_sequence() {

@@ -500,6 +500,7 @@ async fn send_before_connected_is_rejected() {
     let err = handle
         .send_nowait(SignalProxyMessage::HeartBeat(QDateTime::now_utc()))
         .unwrap_err();
+    assert!(matches!(err, Error::NotConnected(_)), "{err:?}");
     assert!(err.to_string().contains("cannot send"), "{err}");
     handle.close();
 }

@@ -14,6 +14,7 @@
 //! Live IRC messages arrive as the top-level RPC `2displayMsg(Message)`,
 //! not as a Sync, and are intercepted here.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::protocol::features::Features;
@@ -39,10 +40,7 @@ pub const OBJECT_RENAMED_SIGNAL: &[u8] = b"__objectRenamed__";
 pub const NETWORK_CREATED_SIGNAL: &[u8] = b"2networkCreated(NetworkId)";
 pub const NETWORK_REMOVED_SIGNAL: &[u8] = b"2networkRemoved(NetworkId)";
 
-/// Most IrcUser plus IrcChannel objects kept across all networks. Far
-/// beyond a real session (a user in dozens of large channels sees tens of
-/// thousands of nicks); past it, new ones are ignored.
-pub const MAX_ROSTER_OBJECTS: usize = 200_000;
+pub use crate::sync::{MAX_MEMBERSHIPS, MAX_ROSTER_OBJECTS};
 
 /// Most networks and identities kept; real accounts have a handful.
 pub use crate::protocol::messages::{MAX_IDENTITIES, MAX_NETWORKS};
@@ -95,6 +93,7 @@ impl Dispatcher {
         // the last one would otherwise merge into them.
         state.users.clear();
         state.channels.clear();
+        Self::prune_to_session(state, session, out);
         out.push(ClientEvent::SessionOpened {
             session: Arc::clone(session),
             peer_features,
@@ -125,8 +124,10 @@ impl Dispatcher {
             });
         }
 
-        // Real cores wrap identityId in the IdentityId user type; plain
-        // ints are accepted too.
+        // The session lists every identity and each is rebuilt from it, so
+        // ones deleted while we were away go. Real cores wrap identityId in
+        // the IdentityId user type; plain ints are accepted too.
+        state.identities.clear();
         for raw in &session.identities {
             let id_value = raw
                 .get("identityId")
@@ -205,6 +206,18 @@ impl Dispatcher {
         )
     }
 
+    /// How many more channel memberships may be added, not counting
+    /// `replacing` (a channel whose roster is about to be replaced).
+    fn membership_room(state: &ClientState, replacing: Option<&str>) -> usize {
+        let used: usize = state
+            .channels
+            .iter()
+            .filter(|(name, _)| Some(name.as_str()) != replacing)
+            .map(|(_, channel)| channel.user_modes.len())
+            .sum();
+        MAX_MEMBERSHIPS.saturating_sub(used)
+    }
+
     fn channel_entry<'s>(
         state: &'s mut ClientState,
         object_name: &str,
@@ -270,8 +283,9 @@ impl Dispatcher {
                 out.push(ClientEvent::NetworkUpdated { network_id, change });
             }
             irc_channel::CLASS_NAME => {
+                let room = Self::membership_room(state, None);
                 if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
-                    channel.handle_sync(slot, params);
+                    channel.handle_sync(slot, params, room);
                 }
             }
             irc_user::CLASS_NAME => {
@@ -411,12 +425,7 @@ impl Dispatcher {
             };
             // A repeated removal (the core broadcasts to every client) is a
             // no-op rather than a double event.
-            if state.buffers.remove(&buffer_id).is_some() {
-                state.messages.remove(&buffer_id);
-                state.backlog_requested.remove(&buffer_id);
-                state.read_markers.remove(&buffer_id);
-                out.push(ClientEvent::BufferRemoved { buffer_id });
-            }
+            Self::remove_buffer(state, buffer_id, out);
         }
         for (bid, name) in renamed {
             let Some(buffer_id) = i32_id(bid).map(BufferId) else {
@@ -515,10 +524,10 @@ impl Dispatcher {
                     }
                 }
                 for (channel, fields) in &channels_seed {
-                    if let Some(chan) =
-                        Self::channel_entry(state, &format!("{}/{channel}", network_id.0))
-                    {
-                        chan.apply_init_data(fields);
+                    let key = format!("{}/{channel}", network_id.0);
+                    let room = Self::membership_room(state, Some(&key));
+                    if let Some(chan) = Self::channel_entry(state, &key) {
+                        chan.apply_init_data(fields, room);
                     }
                 }
                 // The name was usually unknown at session time.
@@ -567,8 +576,9 @@ impl Dispatcher {
                 Self::drain_buffer_syncer(state, out);
             }
             irc_channel::CLASS_NAME => {
+                let room = Self::membership_room(state, Some(&msg.object_name));
                 if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
-                    channel.apply_init_data(&msg.init_data);
+                    channel.apply_init_data(&msg.init_data, room);
                 }
             }
             irc_user::CLASS_NAME => {
@@ -630,7 +640,7 @@ impl Dispatcher {
                     tracing::warn!("networkRemoved with malformed params: {:?}", msg.params);
                     return;
                 };
-                self.remove_network(state, nid, out);
+                Self::remove_network(state, nid, out);
             }
             other => tracing::debug!(
                 "ignoring RpcCall {:?} with {} params",
@@ -641,12 +651,7 @@ impl Dispatcher {
     }
 
     /// Drop a network removed elsewhere, with its objects and buffers.
-    fn remove_network(
-        &mut self,
-        state: &mut ClientState,
-        nid: NetworkId,
-        out: &mut Vec<ClientEvent>,
-    ) {
+    fn remove_network(state: &mut ClientState, nid: NetworkId, out: &mut Vec<ClientEvent>) {
         if state.networks.remove(&nid).is_none() {
             return;
         }
@@ -659,16 +664,53 @@ impl Dispatcher {
             .map(|info| info.buffer_id)
             .collect();
         for buffer_id in doomed {
-            state.buffers.remove(&buffer_id);
-            state.messages.remove(&buffer_id);
-            state.backlog_requested.remove(&buffer_id);
-            state.read_markers.remove(&buffer_id);
-            if let Some(syncer) = state.buffer_syncer.as_mut() {
-                syncer.drop_buffer(i64::from(buffer_id.0));
-            }
-            out.push(ClientEvent::BufferRemoved { buffer_id });
+            Self::remove_buffer(state, buffer_id, out);
         }
         out.push(ClientEvent::NetworkRemoved { network_id: nid });
+    }
+
+    /// Drop a buffer and everything kept for it; a no-op if it's unknown.
+    fn remove_buffer(state: &mut ClientState, buffer_id: BufferId, out: &mut Vec<ClientEvent>) {
+        if state.buffers.remove(&buffer_id).is_none() {
+            return;
+        }
+        state.messages.remove(&buffer_id);
+        state.backlog_requested.remove(&buffer_id);
+        state.read_markers.remove(&buffer_id);
+        if let Some(syncer) = state.buffer_syncer.as_mut() {
+            syncer.drop_buffer(i64::from(buffer_id.0));
+        }
+        out.push(ClientEvent::BufferRemoved { buffer_id });
+    }
+
+    /// On reconnect, drop what the core no longer has: networks and
+    /// buffers deleted (by another client) while we were away. Identities
+    /// are rebuilt from the session wholesale.
+    fn prune_to_session(
+        state: &mut ClientState,
+        session: &SessionInit,
+        out: &mut Vec<ClientEvent>,
+    ) {
+        let networks: HashSet<NetworkId> = session.network_ids.iter().copied().collect();
+        let gone: Vec<NetworkId> = state
+            .networks
+            .keys()
+            .filter(|nid| !networks.contains(nid))
+            .copied()
+            .collect();
+        for nid in gone {
+            Self::remove_network(state, nid, out);
+        }
+        let buffers: HashSet<BufferId> = session.buffer_infos.iter().map(|b| b.buffer_id).collect();
+        let gone: Vec<BufferId> = state
+            .buffers
+            .keys()
+            .filter(|id| !buffers.contains(id))
+            .copied()
+            .collect();
+        for buffer_id in gone {
+            Self::remove_buffer(state, buffer_id, out);
+        }
     }
 
     /// Re-key an object after `__objectRenamed__`. Without this a renamed
@@ -805,7 +847,15 @@ impl Dispatcher {
             _ => list.push(message.clone()),
         }
         state.enforce_cap(info.buffer_id);
-        out.push(ClientEvent::MessageReceived(message));
+        // A late message older than everything kept at the cap is trimmed
+        // right away; the UI mustn't hear about a message it can't show.
+        let kept = state
+            .messages_for_buffer(info.buffer_id)
+            .binary_search_by_key(&message.msg_id, |m| m.msg_id)
+            .is_ok();
+        if kept {
+            out.push(ClientEvent::MessageReceived(message));
+        }
     }
 }
 

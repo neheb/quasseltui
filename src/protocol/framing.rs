@@ -58,14 +58,24 @@ pub async fn read_frame_header<R: AsyncRead + Unpin>(
     Ok(length)
 }
 
+/// Read an announced payload. Memory grows with the bytes that actually
+/// arrive, not the announced length: a header alone can't make us
+/// allocate up to the frame cap.
 pub async fn read_frame_payload<R: AsyncRead + Unpin>(
     reader: &mut R,
     length: usize,
 ) -> Result<Vec<u8>> {
-    if length == 0 {
-        return Ok(Vec::new());
+    const INITIAL: usize = 64 * 1024;
+    let mut buf = Vec::with_capacity(length.min(INITIAL));
+    let wanted = u64::try_from(length).unwrap_or(u64::MAX);
+    reader.take(wanted).read_to_end(&mut buf).await?;
+    if buf.len() < length {
+        return Err(Error::ConnectionClosed(format!(
+            "connection closed after {} of {length} expected bytes",
+            buf.len()
+        )));
     }
-    read_exactly(reader, length).await
+    Ok(buf)
 }
 
 /// Write one frame and flush it.
@@ -98,6 +108,19 @@ pub(crate) async fn read_exactly<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn payload_memory_follows_the_data_not_the_header() {
+        // 64 MB announced, 3 bytes sent: no 64 MB buffer, a clean error.
+        let mut data: &[u8] = b"abc";
+        let err = read_frame_payload(&mut data, DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("after 3 of"), "{err}");
+        let mut data: &[u8] = b"abcdef";
+        assert_eq!(read_frame_payload(&mut data, 4).await.unwrap(), b"abcd");
+        assert_eq!(data, b"ef", "reads no further than the frame");
+    }
 
     #[test]
     fn encode_prepends_big_endian_length() {

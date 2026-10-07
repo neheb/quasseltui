@@ -21,6 +21,16 @@ pub mod irc_user;
 pub mod network;
 pub mod state;
 
+/// Most IrcUser plus IrcChannel objects kept across all networks, and most
+/// nicks or channel names a network lists. Far beyond a real session (a
+/// user in dozens of large channels sees tens of thousands of nicks); past
+/// it, new ones are ignored.
+pub const MAX_ROSTER_OBJECTS: usize = 200_000;
+/// Most channel memberships (nick in channel) kept across all channels.
+pub const MAX_MEMBERSHIPS: usize = 500_000;
+/// Most channels one user is recorded in. IRC servers cap joins far lower.
+pub const MAX_USER_CHANNELS: usize = 10_000;
+
 pub use backlog_manager::BacklogManager;
 pub use buffer_syncer::BufferSyncer;
 pub use dispatcher::Dispatcher;

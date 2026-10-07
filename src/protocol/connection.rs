@@ -273,10 +273,7 @@ impl ConnectionHandle {
     fn check_connected(&self) -> Result<()> {
         match self.state() {
             ConnState::Connected => Ok(()),
-            state => Err(Error::Other(format!(
-                "cannot send SignalProxy message in state {}",
-                format!("{state}").to_uppercase()
-            ))),
+            state => Err(Error::NotConnected(format!("{state}").to_uppercase())),
         }
     }
 

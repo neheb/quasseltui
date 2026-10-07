@@ -112,7 +112,7 @@ pub struct ConnectArgs {
     #[arg(long)]
     pub host: Option<String>,
     /// Quassel core port
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: Option<u16>,
     /// Do not offer encryption during the probe (plain TCP only). WARNING:
     /// commands that log in then send your password in plaintext. Use only
@@ -440,6 +440,12 @@ fn resolve_or_exit(
     args: &ConnectArgs,
     creds: Option<&CredentialArgs>,
 ) -> Result<Resolved, ExitCode> {
+    if creds.is_some_and(|c| c.password.is_some()) {
+        eprintln!(
+            "{command}: warning: --password shows up in `ps` and shell history; prefer \
+             QUASSEL_PASSWORD, the config file, or the prompt"
+        );
+    }
     resolve_connection(args, creds, load_config).map_err(|message| {
         eprintln!("{command}: {message}");
         ExitCode::from(1)

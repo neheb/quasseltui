@@ -392,7 +392,11 @@ async fn requests_after_close_fail_cleanly() {
         .send_input(buffer(1, 1, "#x"), "lost".into())
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("CLOSED"), "{err}");
+    // Passed through as is: the state says it all, no "failed to …" prefix.
+    assert!(
+        matches!(&err, Error::NotConnected(state) if state == "CLOSED"),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]

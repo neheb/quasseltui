@@ -56,6 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reconnecting drops what was deleted meanwhile**: networks, buffers
+  and identities removed on the core (say, from another client) while
+  quasseltui was disconnected no longer linger.
+- **Channel rosters are bounded** (one budget for all memberships, plus
+  caps on network nick/channel lists), and a mode change for someone not
+  in the channel no longer adds them as a ghost member.
+- **Sidebar rows with wide or combining characters** are padded to the
+  right width, so the active row's highlight spans the pane.
+- **A frame header can't make quasseltui allocate up to 64 MB** before any
+  of the payload arrives; the buffer grows with the data.
+- **A late message trimmed by the history cap** no longer marks activity
+  or raises an alert for a line that isn't shown.
+- `port = 0` and `--port 0` are rejected up front; `--password` warns that
+  it shows up in `ps` and shell history.
 - **Lines sent in quick succession can no longer arrive out of order.**
   Each request is queued when it's made, not when its background task
   first runs.

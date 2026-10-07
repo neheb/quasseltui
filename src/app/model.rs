@@ -567,7 +567,6 @@ impl App {
         }
         let info = self.state.buffers.get(&buffer);
         let query = info.is_some_and(|info| info.kind == BufferType::Query);
-        let label = info.map(buffer_label);
         let highlight = query || message.flags.contains(MessageFlags::HIGHLIGHT);
         let in_view = Some(buffer) == self.active_buffer_id;
         if !in_view {
@@ -586,8 +585,8 @@ impl App {
         }
         self.last_alert.insert(buffer, now);
         let nick = short_sender(&message.sender);
-        let title = match label {
-            Some(label) if !query => format!("{nick} in {label}"),
+        let title = match self.state.buffers.get(&buffer) {
+            Some(info) if !query => format!("{nick} in {}", buffer_label(info)),
             _ => nick.to_string(),
         };
         let body = strip_mirc_formatting(&message.contents);

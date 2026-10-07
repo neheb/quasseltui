@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 
 use crate::qt::variant::{Variant, VariantMap};
 use crate::sync::{
-    exact_params, log_unknown_field, log_unknown_slot, split_object_name, string_or_empty,
+    MAX_USER_CHANNELS, exact_params, log_unknown_field, log_unknown_slot, split_object_name,
+    string_or_empty,
 };
 
 pub const CLASS_NAME: &[u8] = b"IrcUser";
@@ -96,7 +97,12 @@ impl IrcUser {
                 if let Some([v]) = one()
                     && v.truthy()
                 {
-                    self.channels.insert(string_or_empty(v));
+                    let channel = string_or_empty(v);
+                    if self.channels.len() < MAX_USER_CHANNELS || self.channels.contains(&channel) {
+                        self.channels.insert(channel);
+                    } else {
+                        tracing::warn!("{object}: channel cap reached; ignoring {channel:?}");
+                    }
                 }
             }
             b"partChannel" => {

@@ -146,8 +146,11 @@ fn buffer_line(app: &App, theme: &Theme, buffer_id: BufferId, width: usize) -> L
     if Some(buf.buffer_id) == app.active_buffer_id {
         style = theme.accent_style();
     }
-    let text = format!("{:<width$}", truncate(&label, width));
-    Line::from(Span::styled(text, style))
+    // Pad by display width, not chars: wide and zero-width characters would
+    // otherwise leave the row's highlight short or long.
+    let shown = truncate(&label, width);
+    let pad = width.saturating_sub(shown.width());
+    Line::from(Span::styled(format!("{shown}{}", " ".repeat(pad)), style))
 }
 
 fn truncate(text: &str, width: usize) -> String {
@@ -501,6 +504,29 @@ mod tests {
         // Too narrow for it: the name still shows, the topic gives way.
         let narrow = draw(&mut app, 40, 20);
         assert!(narrow.contains(&info.name));
+    }
+
+    #[test]
+    fn sidebar_rows_pad_by_display_width() {
+        use crate::protocol::types::{BufferInfo, BufferType};
+        let mut app = App::new(build_demo_state(), false, false);
+        for (id, name) in [(30, "#日本語"), (31, "#cafe\u{301}")] {
+            let info = BufferInfo {
+                buffer_id: BufferId(id),
+                network_id: NetworkId(1),
+                kind: BufferType::Channel,
+                group_id: 0,
+                name: name.into(),
+            };
+            app.state.messages.insert(info.buffer_id, Vec::new());
+            app.state.buffers.insert(info.buffer_id, info);
+        }
+        let width = 20;
+        for id in [30, 31] {
+            let line = buffer_line(&app, &Theme::default(), BufferId(id), width);
+            let shown: usize = line.spans.iter().map(|s| s.content.width()).sum();
+            assert_eq!(shown, width, "buffer {id}");
+        }
     }
 
     #[test]

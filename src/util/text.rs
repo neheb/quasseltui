@@ -75,12 +75,15 @@ pub fn strip_mirc_formatting(text: &str) -> String {
 /// Sanitizing can quadruple the length, so a runaway reason is truncated
 /// with an explicit marker.
 pub fn sanitize_and_truncate(text: &str, max_chars: usize) -> String {
+    const MARKER: &str = "...[truncated]";
     let cleaned = sanitize_terminal(text);
     if cleaned.chars().count() <= max_chars {
         return cleaned;
     }
-    let mut out: String = cleaned.chars().take(max_chars).collect();
-    out.push_str("...[truncated]");
+    // The marker counts toward the cap.
+    let keep = max_chars.saturating_sub(MARKER.len());
+    let mut out: String = cleaned.chars().take(keep).collect();
+    out.push_str(MARKER);
     out
 }
 
@@ -142,7 +145,10 @@ mod tests {
     #[test]
     fn truncation() {
         assert_eq!(sanitize_and_truncate("short", 10), "short");
-        assert_eq!(sanitize_and_truncate("abcdef", 3), "abc...[truncated]");
+        // The marker fits inside the cap.
+        let cut = sanitize_and_truncate(&"x".repeat(50), 20);
+        assert_eq!(cut, "xxxxxx...[truncated]");
+        assert_eq!(cut.chars().count(), 20);
         assert_eq!(sanitize_and_truncate("\x1b", 400), "\\x1b");
     }
 }

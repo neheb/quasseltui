@@ -36,6 +36,10 @@ pub enum Error {
     /// The peer closed the connection mid-stream.
     #[error("{0}")]
     ConnectionClosed(String),
+    /// A send was attempted before the session was up or after it ended;
+    /// carries the connection state.
+    #[error("cannot send SignalProxy message in state {0}")]
+    NotConnected(String),
     /// A peer-supplied frame length exceeds the configured cap.
     #[error("{0}")]
     FrameTooLarge(String),

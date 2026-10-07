@@ -309,5 +309,7 @@ fn second_flags_reject_what_duration_cant_hold() {
         assert!(parse("--duration", bad).is_err(), "{bad}");
     }
     assert!(parse("--connect-timeout", "2.5").is_ok());
+    assert!(parse("--port", "0").is_err());
+    assert!(parse("--port", "4242").is_ok());
     assert!(parse("--duration", "0").is_ok());
 }

@@ -253,21 +253,25 @@ fn parse_server(
             .map_or(Ok(None), |raw| parse_bool(raw))
             .map_err(|e| field_error(key, e))
     };
-    let port =
-        match text("port") {
-            None => None,
-            Some(raw) => {
-                let value: i64 = raw.parse().map_err(|_| {
-                    field_error(
-                        "port",
-                        format!("invalid literal for int() with base 10: '{raw}'"),
-                    )
-                })?;
-                Some(u16::try_from(value).map_err(|_| {
-                    field_error("port", format!("{value} is out of range (0-65535)"))
-                })?)
-            }
-        };
+    let port = match text("port") {
+        None => None,
+        Some(raw) => {
+            let value: i64 = raw.parse().map_err(|_| {
+                field_error(
+                    "port",
+                    format!("invalid literal for int() with base 10: '{raw}'"),
+                )
+            })?;
+            Some(
+                u16::try_from(value)
+                    .ok()
+                    .filter(|port| *port != 0)
+                    .ok_or_else(|| {
+                        field_error("port", format!("{value} is out of range (1-65535)"))
+                    })?,
+            )
+        }
+    };
     let connect_timeout = match text("connect_timeout") {
         None => None,
         Some(raw) => Some(parse_seconds(&raw).map_err(|e| field_error("connect_timeout", e))?),
@@ -468,6 +472,7 @@ mod tests {
         assert!(load_err("[DEFAULT]\nprot = 1\n").contains("[DEFAULT] unknown setting 'prot'"));
         assert!(load_err("[server:home]\nport = notanumber\n").contains("port"));
         assert!(load_err("[server:home]\nport = 70000\n").contains("port"));
+        assert!(load_err("[server:home]\nport = 0\n").contains("1-65535"));
         assert!(load_err("[server:home]\ntls = maybe\n").contains("tls"));
         assert!(load_err("[server:home]\nconnect_timeout = soon\n").contains("connect_timeout"));
         for bad in ["-1", "inf", "NaN", "1e30"] {

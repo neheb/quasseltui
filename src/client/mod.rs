@@ -207,7 +207,7 @@ impl ClientHandle {
         Box::pin(async move {
             sent.await.map_err(|e| match e {
                 // State errors are already clear on their own.
-                Error::Other(msg) if msg.starts_with("cannot send") => Error::Other(msg),
+                e @ Error::NotConnected(_) => e,
                 other => Error::Other(format!("failed to {what}: {other}")),
             })
         })

@@ -455,11 +455,6 @@ impl LogView {
         self.scroll_to(state, 0);
     }
 
-    pub fn scroll_end(&mut self) {
-        self.follow_tail = true;
-        self.anchor = None;
-    }
-
     fn message_ids(&mut self, state: &ClientState) -> Vec<MsgId> {
         self.layout(state)
             .rows

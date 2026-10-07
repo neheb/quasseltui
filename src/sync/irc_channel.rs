@@ -48,7 +48,9 @@ impl IrcChannel {
         self.user_modes.keys()
     }
 
-    pub fn handle_sync(&mut self, slot: &[u8], params: &[Variant]) {
+    /// Apply a sync. `room` is how many members may still be added (the
+    /// dispatcher's global membership budget).
+    pub fn handle_sync(&mut self, slot: &[u8], params: &[Variant], room: usize) {
         let object = self.object_name.clone();
         let one = || exact_params::<1>("IrcChannel", &object, slot, params);
         let two = || exact_params::<2>("IrcChannel", &object, slot, params);
@@ -77,12 +79,25 @@ impl IrcChannel {
                         return;
                     };
                     let modes = modes.list_items().unwrap_or_default();
+                    let mut room = room;
                     for (i, user) in users.iter().enumerate() {
                         let hostmask = string_or_empty(user);
                         let nick = nick_of(&hostmask);
-                        if !nick.is_empty() {
-                            let mode = modes.get(i).map(string_or_empty).unwrap_or_default();
+                        if nick.is_empty() {
+                            continue;
+                        }
+                        let mode = modes.get(i).map(string_or_empty).unwrap_or_default();
+                        if let Some(existing) = self.user_modes.get_mut(nick) {
+                            *existing = mode;
+                        } else if room > 0 {
+                            room -= 1;
                             self.user_modes.insert(nick.to_string(), mode);
+                        } else {
+                            tracing::warn!(
+                                "membership cap reached; not adding {nick:?} to {}",
+                                self.object_name
+                            );
+                            break;
                         }
                     }
                 }
@@ -100,10 +115,14 @@ impl IrcChannel {
                     if nick.is_empty() {
                         return;
                     }
+                    // Modes only change for members; a stray mode change
+                    // mustn't add a ghost one.
                     let mode = string_or_empty(mode);
-                    let existing = self.user_modes.get(nick).cloned().unwrap_or_default();
-                    if !mode.is_empty() && !existing.contains(&mode) {
-                        self.user_modes.insert(nick.to_string(), existing + &mode);
+                    if let Some(existing) = self.user_modes.get_mut(nick)
+                        && !mode.is_empty()
+                        && !existing.contains(&mode)
+                    {
+                        existing.push_str(&mode);
                     }
                 }
             }
@@ -115,27 +134,26 @@ impl IrcChannel {
                         return;
                     }
                     let mode = string_or_empty(mode);
-                    let existing = self.user_modes.get(nick).cloned().unwrap_or_default();
-                    let updated = if mode.is_empty() {
-                        existing
-                    } else {
-                        existing.replace(&mode, "")
-                    };
-                    self.user_modes.insert(nick.to_string(), updated);
+                    if let Some(existing) = self.user_modes.get_mut(nick)
+                        && !mode.is_empty()
+                    {
+                        *existing = existing.replace(&mode, "");
+                    }
                 }
             }
             _ => log_unknown_slot("IrcChannel", &object, slot, params),
         }
     }
 
-    pub fn apply_init_data(&mut self, data: &VariantMap) {
+    /// Apply a full snapshot. `room` caps the members it may hold.
+    pub fn apply_init_data(&mut self, data: &VariantMap, room: usize) {
         for (key, value) in data {
-            self.apply_init_field(key, value);
+            self.apply_init_field(key, value, room);
         }
         self.initialized = true;
     }
 
-    pub fn apply_init_field(&mut self, key: &str, value: &Variant) {
+    pub fn apply_init_field(&mut self, key: &str, value: &Variant, room: usize) {
         match key {
             "name" => {
                 if value.truthy() {
@@ -148,8 +166,16 @@ impl IrcChannel {
             // A full snapshot replaces the roster wholesale.
             "UserModes" => {
                 if let Some(map) = value.as_map() {
+                    if map.len() > room {
+                        tracing::warn!(
+                            "membership cap reached; keeping {room} of {} members of {}",
+                            map.len(),
+                            self.object_name
+                        );
+                    }
                     self.user_modes = map
                         .iter()
+                        .take(room)
                         .map(|(nick, mode)| (nick.clone(), string_or_empty(mode)))
                         .collect();
                 }
@@ -183,7 +209,7 @@ mod tests {
     #[test]
     fn topic_join_part() {
         let mut c = IrcChannel::new("1/#python");
-        c.handle_sync(b"setTopic", &["welcome".into()]);
+        c.handle_sync(b"setTopic", &["welcome".into()], usize::MAX);
         assert_eq!(c.topic, "welcome");
         c.handle_sync(
             b"joinIrcUsers",
@@ -191,25 +217,64 @@ mod tests {
                 Variant::StringList(vec!["alice!a@h".into(), "bob".into()]),
                 Variant::StringList(vec!["@".into()]),
             ],
+            usize::MAX,
         );
         assert_eq!(members(&c), ["alice", "bob"]);
         assert_eq!(c.user_modes["alice"], "@");
         assert_eq!(c.user_modes["bob"], "");
-        c.handle_sync(b"part", &["alice!a@h".into()]);
+        c.handle_sync(b"part", &["alice!a@h".into()], usize::MAX);
         assert_eq!(members(&c), ["bob"]);
     }
 
     #[test]
     fn user_modes() {
         let mut c = IrcChannel::new("1/#python");
-        c.handle_sync(b"addUserMode", &["bob".into(), "o".into()]);
-        c.handle_sync(b"addUserMode", &["bob".into(), "v".into()]);
-        c.handle_sync(b"addUserMode", &["bob".into(), "o".into()]);
+        let join = vec![Variant::StringList(vec!["bob".into()]), Variant::Null];
+        c.handle_sync(b"joinIrcUsers", &join, usize::MAX);
+        c.handle_sync(b"addUserMode", &["bob".into(), "o".into()], usize::MAX);
+        c.handle_sync(b"addUserMode", &["bob".into(), "v".into()], usize::MAX);
+        c.handle_sync(b"addUserMode", &["bob".into(), "o".into()], usize::MAX);
         assert_eq!(c.user_modes["bob"], "ov");
-        c.handle_sync(b"removeUserMode", &["bob".into(), "o".into()]);
+        c.handle_sync(b"removeUserMode", &["bob".into(), "o".into()], usize::MAX);
         assert_eq!(c.user_modes["bob"], "v");
-        c.handle_sync(b"removeUserMode", &["bob".into(), Variant::Null]);
+        c.handle_sync(
+            b"removeUserMode",
+            &["bob".into(), Variant::Null],
+            usize::MAX,
+        );
         assert_eq!(c.user_modes["bob"], "v");
+        // Like Quassel's own client: no mode changes for non-members, so a
+        // stray one can't add a ghost member.
+        c.handle_sync(b"addUserMode", &["ghost".into(), "o".into()], usize::MAX);
+        c.handle_sync(b"removeUserMode", &["ghost".into(), "o".into()], usize::MAX);
+        assert_eq!(members(&c), ["bob"]);
+    }
+
+    #[test]
+    fn members_stop_at_the_room_given() {
+        let mut c = IrcChannel::new("1/#python");
+        let nicks = |names: &[&str]| {
+            vec![
+                Variant::StringList(names.iter().map(|n| (*n).into()).collect()),
+                Variant::Null,
+            ]
+        };
+        c.handle_sync(b"joinIrcUsers", &nicks(&["a", "b", "c"]), 2);
+        assert_eq!(members(&c), ["a", "b"]);
+        // Members already there don't use up room.
+        c.handle_sync(b"joinIrcUsers", &nicks(&["a", "d"]), 1);
+        assert_eq!(members(&c), ["a", "b", "d"]);
+        let mut modes = VariantMap::new();
+        for nick in ["x", "y", "z"] {
+            modes.insert(nick.into(), Variant::Null);
+        }
+        c.apply_init_data(
+            &[("UserModes".to_string(), Variant::Map(modes))]
+                .into_iter()
+                .collect(),
+            2,
+        );
+        assert_eq!(c.user_modes.len(), 2);
     }
 
     #[test]
@@ -218,6 +283,7 @@ mod tests {
         c.handle_sync(
             b"joinIrcUsers",
             &[Variant::StringList(vec!["old".into()]), Variant::Null],
+            usize::MAX,
         );
         let mut modes = VariantMap::new();
         modes.insert("alice".into(), "@".into());
@@ -226,6 +292,7 @@ mod tests {
             &[("UserModes".to_string(), Variant::Map(modes))]
                 .into_iter()
                 .collect(),
+            usize::MAX,
         );
         assert_eq!(members(&c), ["alice", "bob"]);
         assert_eq!(c.user_modes["bob"], "");

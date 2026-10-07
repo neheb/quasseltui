@@ -12,6 +12,8 @@ use crate::protocol::types::{BufferId, BufferInfo, IdentityId, MsgId, NetworkId}
 use crate::sync::buffer_syncer::BufferSyncer;
 use crate::sync::events::IrcMessage;
 use crate::sync::identity::Identity;
+use crate::sync::irc_channel::IrcChannel;
+use crate::sync::irc_user::IrcUser;
 use crate::sync::network::Network;
 
 /// The default per-buffer retention cap. IRC traffic is untrusted input,
@@ -30,6 +32,11 @@ pub struct ClientState {
     /// Per-buffer history, oldest first.
     pub messages: BTreeMap<BufferId, Vec<IrcMessage>>,
     pub identities: BTreeMap<IdentityId, Identity>,
+    /// IrcChannel objects by object name (`"<netId>/<channel>"`): topic and
+    /// members of the channels we're in.
+    pub channels: BTreeMap<String, IrcChannel>,
+    /// IrcUser objects by object name (`"<netId>/<nick>"`).
+    pub users: BTreeMap<String, IrcUser>,
     pub buffer_syncer: Option<BufferSyncer>,
     /// Buffers whose backlog was already requested this session.
     pub backlog_requested: HashSet<BufferId>,
@@ -55,6 +62,8 @@ impl ClientState {
             buffers: BTreeMap::new(),
             messages: BTreeMap::new(),
             identities: BTreeMap::new(),
+            channels: BTreeMap::new(),
+            users: BTreeMap::new(),
             buffer_syncer: None,
             backlog_requested: HashSet::new(),
             max_messages_per_buffer,
@@ -66,6 +75,19 @@ impl ClientState {
     pub fn network_for_buffer(&self, buffer_id: BufferId) -> Option<&Network> {
         let info = self.buffers.get(&buffer_id)?;
         self.networks.get(&info.network_id)
+    }
+
+    /// The channel object behind a channel buffer. Buffer and object names
+    /// can differ in case, as IRC channel names are case-insensitive.
+    pub fn channel_for_buffer(&self, buffer: &BufferInfo) -> Option<&IrcChannel> {
+        let network_id = buffer.network_id.0;
+        self.channels
+            .get(&format!("{network_id}/{}", buffer.name))
+            .or_else(|| {
+                self.channels.values().find(|c| {
+                    c.network_id == network_id && c.name.eq_ignore_ascii_case(&buffer.name)
+                })
+            })
     }
 
     pub fn messages_for_buffer(&self, buffer_id: BufferId) -> &[IrcMessage] {

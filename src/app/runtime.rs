@@ -237,14 +237,6 @@ async fn event_loop(
                 copy_to_clipboard(text);
                 continue;
             }
-            if let Effect::CompleteNick { backward } = effect {
-                let members = client
-                    .as_ref()
-                    .map(|c| channel_members(c, app))
-                    .unwrap_or_default();
-                app.complete_nick(members.iter().map(String::as_str), backward);
-                continue;
-            }
             if let Effect::Reconnect = effect {
                 if let Some(make) = factory {
                     if let Some(old) = client.take() {
@@ -260,22 +252,6 @@ async fn event_loop(
             }
         }
     }
-}
-
-/// The active channel's members, as far as the client knows them.
-fn channel_members(client: &QuasselClient, app: &App) -> Vec<String> {
-    let Some(info) = app
-        .active_buffer_id
-        .and_then(|id| app.state.buffers.get(&id))
-    else {
-        return Vec::new();
-    };
-    client
-        .dispatcher()
-        .channels()
-        .find(|c| c.network_id == info.network_id.0 && c.name.eq_ignore_ascii_case(&info.name))
-        .map(|c| c.members().cloned().collect())
-        .unwrap_or_default()
 }
 
 fn handle_terminal_event(app: &mut App, areas: &Areas, event: Event) -> Vec<Effect> {
@@ -387,7 +363,7 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                 tracing::warn!("set_marker_line failed for buffer {buffer}: {error}");
             });
         }
-        Effect::Reconnect | Effect::Copy(_) | Effect::CompleteNick { .. } => {}
+        Effect::Reconnect | Effect::Copy(_) => {}
     }
 }
 

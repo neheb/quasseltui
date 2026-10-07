@@ -123,11 +123,6 @@ pub enum Effect {
     Reconnect,
     /// Put text on the system clipboard (via the terminal).
     Copy(String),
-    /// Tab while typing: call [`App::complete_nick`] with the active
-    /// channel's members, which only the client knows.
-    CompleteNick {
-        backward: bool,
-    },
 }
 
 /// How the app wants to exit.
@@ -925,14 +920,10 @@ impl App {
     }
 
     /// Tab (Shift+Tab: `backward`) while typing: complete the word before
-    /// the cursor to a nick, or cycle to the next match. `members` is the
-    /// active channel's member list, if known. Recent speakers come first;
-    /// a nick at the start of the line gets `": "`, elsewhere a space.
-    pub fn complete_nick<'a>(
-        &mut self,
-        members: impl IntoIterator<Item = &'a str>,
-        backward: bool,
-    ) {
+    /// the cursor to a nick, or cycle to the next match. Recent speakers
+    /// come first, then the channel's other members; a nick at the start of
+    /// the line gets `": "`, elsewhere a space.
+    fn complete_nick(&mut self, backward: bool) {
         if let Some(mut c) = self.completion.take() {
             let n = c.candidates.len();
             c.index = if backward {
@@ -956,7 +947,7 @@ impl App {
             return;
         }
         let candidates: Vec<String> = self
-            .nick_candidates(members)
+            .nick_candidates()
             .into_iter()
             .filter(|nick| nick.to_lowercase().starts_with(&prefix))
             .collect();
@@ -987,15 +978,17 @@ impl App {
     /// Nicks to complete in the active buffer: recent speakers (newest
     /// first), then the remaining members alphabetically. Speakers who
     /// left are dropped when the member list is known. Never our own nick.
-    fn nick_candidates<'a>(&self, members: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    fn nick_candidates(&self) -> Vec<String> {
         let Some(buffer) = self.active_buffer_id else {
             return Vec::new();
         };
-        let mut members: Vec<&str> = members.into_iter().collect();
-        if let Some(info) = self.state.buffers.get(&buffer)
-            && info.kind == BufferType::Query
-        {
-            members.push(&info.name);
+        let mut members: Vec<&str> = Vec::new();
+        if let Some(info) = self.state.buffers.get(&buffer) {
+            if info.kind == BufferType::Query {
+                members.push(&info.name);
+            } else if let Some(channel) = self.state.channel_for_buffer(info) {
+                members.extend(channel.members().map(String::as_str));
+            }
         }
         let me = self
             .state
@@ -1169,9 +1162,8 @@ impl App {
         // A `yy` only counts if nothing else happened in between.
         let yank_started = std::mem::take(&mut self.pending_yank);
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && self.completes_on_tab() {
-            return vec![Effect::CompleteNick {
-                backward: key.code == KeyCode::BackTab,
-            }];
+            self.complete_nick(key.code == KeyCode::BackTab);
+            return Vec::new();
         }
         // Any other key ends a Tab completion.
         self.completion = None;

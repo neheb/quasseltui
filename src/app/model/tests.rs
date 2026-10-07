@@ -9,7 +9,7 @@ use super::*;
 use crate::protocol::Features;
 use crate::protocol::messages::SessionInit;
 use crate::protocol::types::{MessageType, NetworkId};
-use crate::sync::Network;
+use crate::sync::{IrcChannel, Network};
 
 fn info(id: i32, net: i32, kind: BufferType, name: &str) -> BufferInfo {
     BufferInfo {
@@ -1013,45 +1013,59 @@ fn said(id: i64, buffer: i32, nick: &str) -> IrcMessage {
     }
 }
 
+fn tab(app: &mut App) {
+    assert!(app.on_key(key(KeyCode::Tab)).is_empty());
+}
+
 #[test]
 fn tab_completes_nicks() {
     let mut app = live_app();
     app.on_client_event(&opened());
     app.state.networks.get_mut(&NetworkId(1)).unwrap().my_nick = "me".into();
+    // Buffer #a's channel object, named in a different case.
+    let mut channel = IrcChannel::new("1/#A");
+    for nick in ["alice", "Albert", "alfred", "bob", "me"] {
+        channel.user_modes.insert(nick.into(), String::new());
+    }
+    app.state
+        .channels
+        .insert(channel.object_name.clone(), channel);
     deliver(&mut app, said(1, 10, "alice"));
     deliver(&mut app, said(2, 10, "Albert"));
     deliver(&mut app, said(3, 10, "me"));
-    let members = ["alice", "Albert", "alfred", "bob", "me"];
+    // Spoke, but has since left: not offered.
+    deliver(&mut app, said(4, 10, "alvin"));
     typing(&mut app);
 
     // At the start of the line: the most recent speaker first, with ": ".
     type_text(&mut app, "al");
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "Albert: ");
     // Tab again cycles: earlier speakers, then the rest alphabetically.
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "alice: ");
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "alfred: ");
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "Albert: ");
     // Shift+Tab goes back.
-    app.complete_nick(members, true);
+    app.on_key(key(KeyCode::BackTab));
     assert_eq!(app.input.value, "alfred: ");
+    assert_eq!(app.focus, Focus::Input);
 
     // Typing ends the completion; mid-line nicks get a plain space.
     type_text(&mut app, "ask B");
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "alfred: ask bob ");
     assert_eq!(app.input.cursor, app.input.value.chars().count());
 
     // Our own nick and unknown prefixes complete to nothing.
     app.on_key(ctrl('u'));
     type_text(&mut app, "m");
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "m");
     app.on_key(ctrl('u'));
-    app.complete_nick(members, false);
+    tab(&mut app);
     assert_eq!(app.input.value, "");
 }
 
@@ -1061,25 +1075,15 @@ fn tab_completion_without_a_member_list() {
     app.on_client_event(&opened());
     deliver(&mut app, said(1, 10, "carol"));
     typing(&mut app);
-    // Tab asks the runtime for the member list and stays typing.
+    // No roster yet (or the demo): recent speakers still complete.
     type_text(&mut app, "hi c");
-    assert_eq!(
-        app.on_key(key(KeyCode::Tab)),
-        [Effect::CompleteNick { backward: false }]
-    );
-    assert_eq!(
-        app.on_key(key(KeyCode::BackTab)),
-        [Effect::CompleteNick { backward: true }]
-    );
-    assert_eq!(app.focus, Focus::Input);
-    // Without one (the demo), recent speakers still complete.
-    app.complete_nick([], false);
+    tab(&mut app);
     assert_eq!(app.input.value, "hi carol ");
     // A query completes to its peer.
     app.select_buffer(BufferId(12));
     app.on_key(ctrl('u'));
     type_text(&mut app, "fr");
-    app.complete_nick([], false);
+    tab(&mut app);
     assert_eq!(app.input.value, "friend: ");
 }
 

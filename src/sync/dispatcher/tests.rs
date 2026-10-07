@@ -207,11 +207,11 @@ fn objects_on_unknown_networks_are_ignored() {
     h.init(b"IrcUser", "nope", VariantMap::new());
     assert!(h.take().is_empty());
     assert_eq!(h.state.networks.len(), 1);
-    assert!(h.dispatcher.user("4/bob").is_none());
-    assert!(h.dispatcher.channel("4/#c").is_none());
+    assert!(!h.state.users.contains_key("4/bob"));
+    assert!(!h.state.channels.contains_key("4/#c"));
     // On a known network they are created.
     h.sync(b"IrcUser", "1/bob", b"setAway", vec![Variant::Bool(true)]);
-    assert!(h.dispatcher.user("1/bob").unwrap().away);
+    assert!(h.state.users.get("1/bob").unwrap().away);
 }
 
 #[test]
@@ -252,7 +252,7 @@ fn channel_rename_updates_name_and_network_list() {
             "1/#old".into(),
         ],
     );
-    let chan = h.dispatcher.channel("1/#new").unwrap();
+    let chan = h.state.channels.get("1/#new").unwrap();
     assert_eq!(chan.name, "#new");
     assert_eq!(chan.topic, "t");
     let net = &h.state.networks[&NetworkId(1)];
@@ -300,8 +300,8 @@ fn network_init_data_emits_update_and_creates_children() {
         &events[..],
         [ClientEvent::NetworkUpdated { change: NetworkChange::Name(n), .. }] if n == "Libera"
     ));
-    assert_eq!(h.dispatcher.user("1/seanr").unwrap().real_name, "Sean");
-    assert_eq!(h.dispatcher.channel("1/#python").unwrap().topic, "hi");
+    assert_eq!(h.state.users.get("1/seanr").unwrap().real_name, "Sean");
+    assert_eq!(h.state.channels.get("1/#python").unwrap().topic, "hi");
 }
 
 #[test]
@@ -342,13 +342,13 @@ fn struct_of_arrays_seed() {
             ),
         ]),
     );
-    let alice = h.dispatcher.user("3/alice").unwrap();
+    let alice = h.state.users.get("3/alice").unwrap();
     assert_eq!(
         (alice.user.as_str(), alice.host.as_str(), alice.away),
         ("al", "h1", false)
     );
-    assert!(h.dispatcher.user("3/bob").unwrap().away);
-    let chan = h.dispatcher.channel("3/#chan").unwrap();
+    assert!(h.state.users.get("3/bob").unwrap().away);
+    let chan = h.state.channels.get("3/#chan").unwrap();
     assert_eq!(chan.topic, "greetings");
     assert_eq!(chan.user_modes.len(), 2);
     assert_eq!(chan.user_modes["alice"], "@");
@@ -665,11 +665,16 @@ fn reseed_clears_latches_and_keeps_history() {
         vec![msg_variant(message(1, &info, "kept"))],
     );
     h.state.claim_backlog(BufferId(10));
+    h.sync(b"IrcChannel", "1/#python", b"setTopic", vec!["old".into()]);
+    h.sync(b"IrcUser", "1/ghost", b"setAway", vec![Variant::Bool(true)]);
+    assert!(!h.state.channels.is_empty() && !h.state.users.is_empty());
     let mut fresh = Dispatcher::new();
     let s = session(&[1], vec![info], vec![]);
     fresh.seed_from_session(&mut h.state, &s, Features::empty(), &mut Vec::new());
     assert!(h.state.backlog_requested.is_empty());
     assert_eq!(h.state.messages[&BufferId(10)][0].contents, "kept");
+    // Rosters belong to a session; the new one re-sends them.
+    assert!(h.state.channels.is_empty() && h.state.users.is_empty());
 }
 
 fn setup_user_in_channel() -> Harness {
@@ -700,10 +705,10 @@ fn nick_change_rekeys_object_and_rosters() {
             "1/alice".into(),
         ],
     );
-    assert!(h.dispatcher.user("1/alice").is_none());
-    let bob = h.dispatcher.user("1/bob").unwrap();
+    assert!(!h.state.users.contains_key("1/alice"));
+    let bob = h.state.users.get("1/bob").unwrap();
     assert_eq!((bob.nick.as_str(), bob.user.as_str()), ("bob", "al"));
-    let chan = h.dispatcher.channel("1/#chan").unwrap();
+    let chan = h.state.channels.get("1/#chan").unwrap();
     assert_eq!(
         chan.user_modes.iter().collect::<Vec<_>>(),
         [(&"bob".to_string(), &"@".to_string())]
@@ -712,7 +717,7 @@ fn nick_change_rekeys_object_and_rosters() {
     assert!(net.users.contains("bob") && !net.users.contains("alice"));
 
     h.sync(b"IrcUser", "1/bob", b"setAway", vec![Variant::Bool(true)]);
-    let bob = h.dispatcher.user("1/bob").unwrap();
+    let bob = h.state.users.get("1/bob").unwrap();
     assert!(bob.away);
     assert_eq!(bob.user, "al");
 }
@@ -734,7 +739,7 @@ fn rename_for_uninstantiated_user_still_rekeys_rosters() {
         OBJECT_RENAMED_SIGNAL,
         vec!["IrcUser".into(), "1/dave".into(), "1/carol".into()],
     );
-    let chan = h.dispatcher.channel("1/#chan").unwrap();
+    let chan = h.state.channels.get("1/#chan").unwrap();
     assert_eq!(chan.user_modes.get("dave").map(String::as_str), Some("+"));
     assert!(!chan.user_modes.contains_key("carol"));
     assert!(h.state.networks[&NetworkId(1)].users.contains("dave"));
@@ -751,15 +756,17 @@ fn part_and_quit_cascade() {
     );
     h.sync(b"IrcUser", "1/alice", b"partChannel", vec!["#chan".into()]);
     assert!(
-        h.dispatcher
-            .channel("1/#chan")
+        h.state
+            .channels
+            .get("1/#chan")
             .unwrap()
             .user_modes
             .is_empty()
     );
     assert!(
-        h.dispatcher
-            .channel("1/#other")
+        h.state
+            .channels
+            .get("1/#other")
             .unwrap()
             .user_modes
             .contains_key("alice")
@@ -767,13 +774,14 @@ fn part_and_quit_cascade() {
 
     h.sync(b"IrcUser", "1/alice", b"quit", vec![]);
     assert!(
-        h.dispatcher
-            .channel("1/#other")
+        h.state
+            .channels
+            .get("1/#other")
             .unwrap()
             .user_modes
             .is_empty()
     );
-    assert!(h.dispatcher.user("1/alice").is_none());
+    assert!(!h.state.users.contains_key("1/alice"));
     assert!(!h.state.networks[&NetworkId(1)].users.contains("alice"));
 }
 
@@ -783,7 +791,7 @@ fn own_part_tears_down_the_channel() {
     h.sync(b"Network", "1", b"setMyNick", vec!["alice".into()]);
     h.sync(b"Network", "1", b"addIrcChannel", vec!["#chan".into()]);
     h.sync(b"IrcUser", "1/alice", b"partChannel", vec!["#chan".into()]);
-    assert!(h.dispatcher.channel("1/#chan").is_none());
+    assert!(!h.state.channels.contains_key("1/#chan"));
     assert!(!h.state.networks[&NetworkId(1)].channels.contains("#chan"));
 }
 
@@ -799,8 +807,8 @@ fn network_disconnect_clears_rosters() {
             ..
         }]
     ));
-    assert!(h.dispatcher.user("1/alice").is_none());
-    assert!(h.dispatcher.channel("1/#chan").is_none());
+    assert!(!h.state.users.contains_key("1/alice"));
+    assert!(!h.state.channels.contains_key("1/#chan"));
     assert!(h.state.networks[&NetworkId(1)].users.is_empty());
 }
 
@@ -835,7 +843,7 @@ fn network_lifecycle_rpcs() {
     assert!(!h.state.networks.contains_key(&NetworkId(2)));
     assert!(!h.state.buffers.contains_key(&BufferId(10)));
     assert!(!h.state.read_markers.contains_key(&BufferId(10)));
-    assert!(h.dispatcher.user("2/zed").is_none());
+    assert!(!h.state.users.contains_key("2/zed"));
     assert!(h.state.buffers.contains_key(&BufferId(11)));
     h.rpc(NETWORK_REMOVED_SIGNAL, vec!["junk".into()]);
     assert!(h.take().is_empty());

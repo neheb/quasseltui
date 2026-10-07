@@ -7,14 +7,13 @@
 //! a known network, up to [`MAX_ROSTER_OBJECTS`]; unknown classes are
 //! dropped. The core is untrusted input, so everything it can create is
 //! capped: networks ([`MAX_NETWORKS`]), identities ([`MAX_IDENTITIES`]),
-//! roster objects, and buffers (`MAX_BUFFERS`). Networks, identities and the BufferSyncer
-//! live in `ClientState` (the UI reads them); IRC users and channels live
-//! here, since only the dispatcher needs them.
+//! roster objects, and buffers (`MAX_BUFFERS`). Everything it builds,
+//! including the IRC user and channel rosters, lives in `ClientState`,
+//! where the UI reads it; the dispatcher keeps only backlog bookkeeping.
 //!
 //! Live IRC messages arrive as the top-level RPC `2displayMsg(Message)`,
 //! not as a Sync, and are intercepted here.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::protocol::features::Features;
@@ -58,10 +57,6 @@ const PER_BUFFER_SLOTS: [&[u8]; 4] = [
 
 #[derive(Debug, Default)]
 pub struct Dispatcher {
-    /// IrcChannel objects by object name (`"<netId>/<channel>"`).
-    channels: BTreeMap<String, IrcChannel>,
-    /// IrcUser objects by object name (`"<netId>/<nick>"`).
-    users: BTreeMap<String, IrcUser>,
     backlog: BacklogManager,
 }
 
@@ -76,22 +71,6 @@ fn as_network_id(value: &Variant) -> Option<NetworkId> {
 impl Dispatcher {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    pub fn channel(&self, object_name: &str) -> Option<&IrcChannel> {
-        self.channels.get(object_name)
-    }
-
-    pub fn user(&self, object_name: &str) -> Option<&IrcUser> {
-        self.users.get(object_name)
-    }
-
-    pub fn channels(&self) -> impl Iterator<Item = &IrcChannel> {
-        self.channels.values()
-    }
-
-    pub fn users(&self) -> impl Iterator<Item = &IrcUser> {
-        self.users.values()
     }
 
     // -- session seeding -----------------------------------------------------
@@ -112,6 +91,10 @@ impl Dispatcher {
     ) {
         state.peer_features = peer_features;
         state.backlog_requested.clear();
+        // The core re-sends rosters for the new session; stale members from
+        // the last one would otherwise merge into them.
+        state.users.clear();
+        state.channels.clear();
         out.push(ClientEvent::SessionOpened {
             session: Arc::clone(session),
             peer_features,
@@ -192,13 +175,13 @@ impl Dispatcher {
 
     /// Whether a new roster object may be created for `object_name`
     /// (`"<netId>/<name>"`).
-    fn may_create(&self, state: &ClientState, object_name: &str) -> bool {
+    fn may_create(state: &ClientState, object_name: &str) -> bool {
         let (network_id, name) = crate::sync::split_object_name(object_name);
         if name.is_empty() || !state.networks.contains_key(&NetworkId(network_id)) {
             tracing::debug!("ignoring roster object {object_name:?}: unknown network");
             return false;
         }
-        if self.users.len() + self.channels.len() >= MAX_ROSTER_OBJECTS {
+        if state.users.len() + state.channels.len() >= MAX_ROSTER_OBJECTS {
             tracing::warn!("roster object cap reached; ignoring {object_name:?}");
             return false;
         }
@@ -222,23 +205,28 @@ impl Dispatcher {
         )
     }
 
-    fn channel_entry(&mut self, state: &ClientState, object_name: &str) -> Option<&mut IrcChannel> {
-        if !self.channels.contains_key(object_name) && !self.may_create(state, object_name) {
+    fn channel_entry<'s>(
+        state: &'s mut ClientState,
+        object_name: &str,
+    ) -> Option<&'s mut IrcChannel> {
+        if !state.channels.contains_key(object_name) && !Self::may_create(state, object_name) {
             return None;
         }
         Some(
-            self.channels
+            state
+                .channels
                 .entry(object_name.to_string())
                 .or_insert_with(|| IrcChannel::new(object_name)),
         )
     }
 
-    fn user_entry(&mut self, state: &ClientState, object_name: &str) -> Option<&mut IrcUser> {
-        if !self.users.contains_key(object_name) && !self.may_create(state, object_name) {
+    fn user_entry<'s>(state: &'s mut ClientState, object_name: &str) -> Option<&'s mut IrcUser> {
+        if !state.users.contains_key(object_name) && !Self::may_create(state, object_name) {
             return None;
         }
         Some(
-            self.users
+            state
+                .users
                 .entry(object_name.to_string())
                 .or_insert_with(|| IrcUser::new(object_name)),
         )
@@ -282,12 +270,12 @@ impl Dispatcher {
                 out.push(ClientEvent::NetworkUpdated { network_id, change });
             }
             irc_channel::CLASS_NAME => {
-                if let Some(channel) = self.channel_entry(state, &msg.object_name) {
+                if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
                     channel.handle_sync(slot, params);
                 }
             }
             irc_user::CLASS_NAME => {
-                let Some(user) = self.user_entry(state, &msg.object_name) else {
+                let Some(user) = Self::user_entry(state, &msg.object_name) else {
                     return;
                 };
                 user.handle_sync(slot, params);
@@ -354,7 +342,7 @@ impl Dispatcher {
         channel: &str,
     ) {
         let key = format!("{network_id}/{channel}");
-        let Some(chan) = self.channels.get_mut(&key) else {
+        let Some(chan) = state.channels.get_mut(&key) else {
             return;
         };
         chan.user_modes.remove(nick);
@@ -366,7 +354,7 @@ impl Dispatcher {
         {
             chan.user_modes.clear();
             network.channels.remove(&chan.name);
-            self.channels.remove(&key);
+            state.channels.remove(&key);
         }
     }
 
@@ -380,7 +368,7 @@ impl Dispatcher {
         network_id: i32,
         nick: &str,
     ) {
-        for chan in self.channels.values_mut() {
+        for chan in state.channels.values_mut() {
             if chan.network_id == network_id {
                 chan.user_modes.remove(nick);
             }
@@ -388,12 +376,12 @@ impl Dispatcher {
         if let Some(network) = state.networks.get_mut(&NetworkId(network_id)) {
             network.users.remove(nick);
         }
-        self.users.remove(key);
+        state.users.remove(key);
     }
 
     fn clear_network_rosters(&mut self, state: &mut ClientState, network_id: NetworkId) {
-        self.users.retain(|_, u| u.network_id != network_id.0);
-        self.channels.retain(|_, c| c.network_id != network_id.0);
+        state.users.retain(|_, u| u.network_id != network_id.0);
+        state.channels.retain(|_, c| c.network_id != network_id.0);
         if let Some(network) = state.networks.get_mut(&network_id) {
             network.users.clear();
             network.channels.clear();
@@ -521,14 +509,14 @@ impl Dispatcher {
                 // Materialize the roster. Objects that a Sync created before
                 // this InitData are re-seeded in place.
                 for (nick, fields) in &users_seed {
-                    if let Some(user) = self.user_entry(state, &format!("{}/{nick}", network_id.0))
+                    if let Some(user) = Self::user_entry(state, &format!("{}/{nick}", network_id.0))
                     {
                         user.apply_init_data(fields);
                     }
                 }
                 for (channel, fields) in &channels_seed {
                     if let Some(chan) =
-                        self.channel_entry(state, &format!("{}/{channel}", network_id.0))
+                        Self::channel_entry(state, &format!("{}/{channel}", network_id.0))
                     {
                         chan.apply_init_data(fields);
                     }
@@ -579,12 +567,12 @@ impl Dispatcher {
                 Self::drain_buffer_syncer(state, out);
             }
             irc_channel::CLASS_NAME => {
-                if let Some(channel) = self.channel_entry(state, &msg.object_name) {
+                if let Some(channel) = Self::channel_entry(state, &msg.object_name) {
                     channel.apply_init_data(&msg.init_data);
                 }
             }
             irc_user::CLASS_NAME => {
-                if let Some(user) = self.user_entry(state, &msg.object_name) {
+                if let Some(user) = Self::user_entry(state, &msg.object_name) {
                     user.apply_init_data(&msg.init_data);
                 }
             }
@@ -662,8 +650,8 @@ impl Dispatcher {
         if state.networks.remove(&nid).is_none() {
             return;
         }
-        self.users.retain(|_, u| u.network_id != nid.0);
-        self.channels.retain(|_, c| c.network_id != nid.0);
+        state.users.retain(|_, u| u.network_id != nid.0);
+        state.channels.retain(|_, c| c.network_id != nid.0);
         let doomed: Vec<BufferId> = state
             .buffers
             .values()
@@ -706,12 +694,12 @@ impl Dispatcher {
             return;
         };
         match class_name.as_slice() {
-            irc_user::CLASS_NAME => match self.users.remove(&old_name) {
+            irc_user::CLASS_NAME => match state.users.remove(&old_name) {
                 Some(mut user) => {
                     let old_nick = user.nick.clone();
                     user.rename(&new_name);
                     let (network_id, new_nick) = (user.network_id, user.nick.clone());
-                    self.users.insert(new_name, user);
+                    state.users.insert(new_name, user);
                     self.rekey_rosters(state, network_id, &old_nick, &new_nick);
                 }
                 // A nick can sit in rosters without an IrcUser object ever
@@ -731,7 +719,7 @@ impl Dispatcher {
                 }
             },
             irc_channel::CLASS_NAME => {
-                if let Some(mut channel) = self.channels.remove(&old_name) {
+                if let Some(mut channel) = state.channels.remove(&old_name) {
                     let old_channel = channel.name.clone();
                     channel.rename(&new_name);
                     // Keep the network's channel list (which drives "joined"
@@ -741,7 +729,7 @@ impl Dispatcher {
                     {
                         network.channels.insert(channel.name.clone());
                     }
-                    self.channels.insert(new_name, channel);
+                    state.channels.insert(new_name, channel);
                 }
             }
             other => tracing::debug!(
@@ -766,7 +754,7 @@ impl Dispatcher {
         {
             network.users.insert(new_nick.to_string());
         }
-        for chan in self.channels.values_mut() {
+        for chan in state.channels.values_mut() {
             if chan.network_id == network_id
                 && let Some(mode) = chan.user_modes.remove(old_nick)
             {

@@ -23,7 +23,7 @@ use crate::config::{self, Config, ConfigError};
 use crate::protocol::connection::ConnectionOptions;
 use crate::protocol::transport::TlsOptions;
 
-pub const BUILD_DATE: &str = "2026-04-14";
+pub const BUILD_DATE: &str = "2026-10-27";
 const DEFAULT_CONNECT_TIMEOUT: f64 = 10.0;
 const SUBCOMMANDS: [&str; 2] = ["ui-demo", "ui"];
 

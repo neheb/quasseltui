@@ -35,17 +35,6 @@ impl NetworkConnectionState {
             _ => Self::Disconnected,
         }
     }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Disconnected => "Disconnected",
-            Self::Connecting => "Connecting",
-            Self::Initializing => "Initializing",
-            Self::Initialized => "Initialized",
-            Self::Reconnecting => "Reconnecting",
-            Self::Disconnecting => "Disconnecting",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -132,7 +132,7 @@ pub enum ClientEvent {
 }
 
 impl ClientEvent {
-    /// Variant name, for event counting in `dump-state`.
+    /// Variant name, for compact assertions and logs.
     pub fn name(&self) -> &'static str {
         match self {
             Self::SessionOpened { .. } => "SessionOpened",

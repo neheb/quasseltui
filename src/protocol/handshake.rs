@@ -5,10 +5,10 @@
 //! UTF-8 (`DataStreamPeer::writeMessage(const QVariantMap&)`). Keys go out
 //! in sorted order, which is Qt's QMap iteration order.
 
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::AsyncRead;
 
 use crate::protocol::error::{Error, Result};
-use crate::protocol::framing::{DEFAULT_MAX_FRAME_BYTES, read_frame, write_frame};
+use crate::protocol::framing::{DEFAULT_MAX_FRAME_BYTES, read_frame};
 use crate::protocol::messages::{
     ClientInit, ClientLogin, HandshakeMessage, parse_handshake_message,
 };
@@ -68,20 +68,6 @@ pub fn encode_client_init(msg: &ClientInit) -> Vec<u8> {
 
 pub fn encode_client_login(msg: &ClientLogin) -> Vec<u8> {
     encode_handshake_payload(&msg.to_map())
-}
-
-pub async fn send_client_init<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    msg: &ClientInit,
-) -> Result<()> {
-    write_frame(writer, &encode_client_init(msg)).await
-}
-
-pub async fn send_client_login<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    msg: &ClientLogin,
-) -> Result<()> {
-    write_frame(writer, &encode_client_login(msg)).await
 }
 
 /// Read one framed handshake reply and parse it.

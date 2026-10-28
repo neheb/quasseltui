@@ -5,7 +5,7 @@
 //! returns [`Effect`]s (requests to the core) for the runtime to carry out.
 //! It does no I/O itself, so the whole interaction model is unit-testable.
 //!
-//! Rules carried over from the Python client:
+//! Rules:
 //!
 //! - A disconnect before the session opened is fatal on the first
 //!   connection (exit with the reason). After that it enters a visible

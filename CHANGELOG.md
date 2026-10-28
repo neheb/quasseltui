@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `hide_nick_changes = true` in the `[quasseltui]` config section hides
   nick changes from the scrollback, like `hide_joins_parts`.
 
+### Removed
+
+- **The headless debugging commands** `probe-only`, `login-only`,
+  `stream-only` and `dump-state`, along with their exit codes. `ui` and
+  `ui-demo` remain.
+
 ### Fixed
 
 - **Messages missed during a disconnect are filled in.** After a

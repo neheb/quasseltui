@@ -104,7 +104,7 @@ impl QDateTime {
     }
 
     /// The wall-clock value, clamped into chrono's 0001-01-01..9999-12-31
-    /// range the way the Python client clamped into `datetime`'s range.
+    /// range.
     pub fn to_naive(&self) -> NaiveDateTime {
         let min = NaiveDate::from_ymd_opt(1, 1, 1).expect("valid date");
         let max = NaiveDate::from_ymd_opt(9999, 12, 31).expect("valid date");

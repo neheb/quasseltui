@@ -75,8 +75,7 @@ With a config in place, three shortcuts become available:
 
 - `quasseltui` — connects to `default_server`.
 - `quasseltui <NAME>` — connects to `[server:<NAME>]`.
-- `quasseltui ui --server <NAME>` — same as above, explicit form, and
-  also works with `login-only` / `stream-only` / `dump-state` / `probe-only`.
+- `quasseltui ui --server <NAME>` — same as above, explicit form.
 
 Any command-line flag still overrides the corresponding config value.
 
@@ -156,14 +155,6 @@ active buffer, and the cursor row. Switching themes updates a running
 quasseltui within a second. This needs a truecolor terminal
 (`COLORTERM=truecolor`, which Omarchy's terminals set); elsewhere the accent
 falls back to ANSI blue. `NO_COLOR` turns colors off.
-
-## Headless commands
-
-`probe-only`, `login-only`, `stream-only`, and `dump-state` exercise the
-protocol without the UI, which is handy for checking a core or debugging.
-They exit with distinct codes: 0 ok, 1 bad arguments or credentials,
-2 connect failed, 3 core rejected the client, 4 protocol error, 5 TLS
-downgrade refused, 6 core not configured, 7 login rejected, 130 interrupted.
 
 ## Development
 

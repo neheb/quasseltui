@@ -2,25 +2,15 @@
 //!
 //! Subcommands:
 //!
-//! - `probe-only`: probe + optional TLS + `ClientInit`, print the reply.
-//! - `login-only`: the full handshake through `SessionInit`, print a summary.
-//! - `stream-only`: log in, then print SignalProxy events for `--duration`.
-//! - `dump-state`: run the client stack for `--duration`, print the state.
-//! - `ui-demo`: the UI on static placeholder data, no core needed.
 //! - `ui`: the UI against a live core.
+//! - `ui-demo`: the UI on static placeholder data, no core needed.
 //!
 //! With a config file, bare `quasseltui` runs `ui` against the default
 //! server and `quasseltui NAME` runs it against `[server:NAME]`.
-//!
-//! Exit codes (headless commands): 0 ok, 1 bad arguments or missing
-//! credentials, 2 connect failed, 3 core rejected ClientInit, 4 protocol
-//! error, 5 TLS downgrade, 6 core not configured, 7 auth rejected,
-//! 130 interrupted.
 
-use std::collections::BTreeMap;
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -30,31 +20,12 @@ use crate::app::format::DisplaySettings;
 use crate::app::last_buffer;
 use crate::client::{ClientState, QuasselClient};
 use crate::config::{self, Config, ConfigError};
-use crate::protocol::connection::{
-    BoxedStream, ConnectionOptions, ProtocolEvent, QuasselConnection,
-};
-use crate::protocol::error::Error;
-use crate::protocol::handshake::{recv_handshake_message, send_client_init, send_client_login};
-use crate::protocol::messages::{
-    ClientInit, ClientInitAck, ClientLogin, HandshakeMessage, SessionInit,
-};
-use crate::protocol::probe::{ConnectionFeatures, NegotiatedProtocol, probe};
-use crate::protocol::transport::{TlsOptions, close_stream, open_tcp_connection, start_tls};
-use crate::protocol::types::BufferInfo;
-use crate::qt::variant::{Variant, VariantMap};
-use crate::sync::events::ClientEvent;
-use crate::util::text::sanitize_terminal;
+use crate::protocol::connection::ConnectionOptions;
+use crate::protocol::transport::TlsOptions;
 
 pub const BUILD_DATE: &str = "2026-04-14";
 const DEFAULT_CONNECT_TIMEOUT: f64 = 10.0;
-const SUBCOMMANDS: [&str; 6] = [
-    "probe-only",
-    "login-only",
-    "stream-only",
-    "dump-state",
-    "ui-demo",
-    "ui",
-];
+const SUBCOMMANDS: [&str; 2] = ["ui-demo", "ui"];
 
 pub fn client_version() -> String {
     format!("quasseltui v{}", crate::VERSION)
@@ -83,17 +54,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Mode {
-    /// Run the probe + ClientInit handshake against a core, print the reply, and exit.
-    ProbeOnly(ProbeArgs),
-    /// Run the full handshake (probe + ClientInit + ClientLogin) against a
-    /// core, print the SessionInit summary, and exit.
-    LoginOnly(LoginArgs),
-    /// Run the full handshake, then stream SignalProxy events from the core
-    /// for --duration seconds. Pretty-prints each event.
-    StreamOnly(StreamArgs),
-    /// Run the client stack for --duration seconds, then print a snapshot of
-    /// the client state (networks, buffers, messages, identities).
-    DumpState(DumpArgs),
     /// Launch the UI against static placeholder data. Useful for eyeballing
     /// the layout without a core. Press Ctrl+Q to quit.
     UiDemo,
@@ -115,7 +75,7 @@ pub struct ConnectArgs {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     pub port: Option<u16>,
     /// Do not offer encryption during the probe (plain TCP only). WARNING:
-    /// commands that log in then send your password in plaintext. Use only
+    /// your password is then sent in plaintext. Use only
     /// against trusted local cores.
     #[arg(long)]
     pub no_tls: bool,
@@ -144,48 +104,11 @@ pub struct CredentialArgs {
 }
 
 #[derive(Debug, Clone, Args)]
-pub struct ProbeArgs {
-    #[command(flatten)]
-    pub connect: ConnectArgs,
-    /// Continue if the core does not enable TLS even though we offered it.
-    /// Without this flag we abort to prevent a downgrade attack.
-    #[arg(long)]
-    pub allow_plaintext: bool,
-}
-
-#[derive(Debug, Clone, Args)]
 pub struct LoginArgs {
     #[command(flatten)]
     pub connect: ConnectArgs,
     #[command(flatten)]
     pub credentials: CredentialArgs,
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct StreamArgs {
-    #[command(flatten)]
-    pub login: LoginArgs,
-    /// Seconds to stream events after handshake.
-    #[arg(long, default_value_t = 60.0, value_parser = config::parse_seconds)]
-    pub duration: f64,
-    /// Optional cap on how many events to print before exiting.
-    #[arg(long)]
-    pub max_events: Option<u64>,
-    /// Print the raw params/init_data on each event (may be long).
-    #[arg(long, short)]
-    pub verbose: bool,
-}
-
-#[derive(Debug, Clone, Args)]
-pub struct DumpArgs {
-    #[command(flatten)]
-    pub login: LoginArgs,
-    /// Seconds to accumulate state before dumping.
-    #[arg(long, default_value_t = 30.0, value_parser = config::parse_seconds)]
-    pub duration: f64,
-    /// Maximum messages per buffer to print in the summary.
-    #[arg(long, default_value_t = 5)]
-    pub max_messages: usize,
 }
 
 impl std::fmt::Debug for CredentialArgs {
@@ -236,28 +159,6 @@ impl Resolved {
 
     fn connect_timeout(&self) -> Duration {
         Duration::from_secs_f64(self.connect_timeout)
-    }
-
-    /// How long each post-connect step (probe, TLS, handshake) may take,
-    /// matching the UI's handshake window.
-    fn handshake_timeout(&self) -> Duration {
-        self.connection_options("", "")
-            .effective_handshake_timeout()
-    }
-
-    /// Run one handshake step, failing if the core goes quiet.
-    async fn stalled<T>(
-        &self,
-        step: &str,
-        future: impl Future<Output = Result<T, Error>>,
-    ) -> Result<T, Error> {
-        let window = self.handshake_timeout();
-        tokio::time::timeout(window, future).await.unwrap_or_else(|_| {
-            Err(Error::Handshake(format!(
-                "core accepted the TCP connection but stalled during {step} (no reply within {}s)",
-                window.as_secs_f64()
-            )))
-        })
     }
 
     fn connection_options(&self, user: &str, password: &str) -> ConnectionOptions {
@@ -508,50 +409,28 @@ fn resolve_or_exit(
     })
 }
 
-#[derive(Clone, Copy)]
-enum LogTarget {
-    Stderr,
-    /// `QUASSELTUI_LOG` if set, otherwise nothing: a full-screen UI can't
-    /// show log lines without corrupting the screen.
-    UiFile,
-}
-
-fn init_logging(target: LogTarget, verbose: bool) {
-    use tracing_subscriber::fmt;
-    let level = if verbose {
-        tracing::Level::INFO
-    } else {
-        tracing::Level::WARN
+/// Log to `QUASSELTUI_LOG` if set, otherwise nowhere: a full-screen UI
+/// can't show log lines without corrupting the screen.
+fn init_logging() {
+    let Some(path) = std::env::var_os("QUASSELTUI_LOG").filter(|p| !p.is_empty()) else {
+        return;
     };
-    match target {
-        LogTarget::Stderr => {
-            let _ = fmt()
-                .with_max_level(level)
-                .with_writer(io::stderr)
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            let _ = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::WARN)
+                .with_ansi(false)
+                .with_writer(Mutex::new(file))
                 .try_init();
         }
-        LogTarget::UiFile => {
-            let Some(path) = std::env::var_os("QUASSELTUI_LOG").filter(|p| !p.is_empty()) else {
-                return;
-            };
-            match std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-            {
-                Ok(file) => {
-                    let _ = fmt()
-                        .with_max_level(level)
-                        .with_ansi(false)
-                        .with_writer(Mutex::new(file))
-                        .try_init();
-                }
-                Err(e) => eprintln!(
-                    "ui: QUASSELTUI_LOG: {}: {e} — logging disabled",
-                    std::path::Path::new(&path).display()
-                ),
-            }
-        }
+        Err(e) => eprintln!(
+            "ui: QUASSELTUI_LOG: {}: {e} — logging disabled",
+            std::path::Path::new(&path).display()
+        ),
     }
 }
 
@@ -582,32 +461,11 @@ pub fn main() -> ExitCode {
     let code = match cli.mode {
         Mode::UiDemo => runtime.block_on(run_ui_demo()),
         Mode::Ui(args) => runtime.block_on(run_ui(args)),
-        Mode::ProbeOnly(args) => interruptible(&runtime, probe_only(args)),
-        Mode::LoginOnly(args) => interruptible(&runtime, login_only(args)),
-        Mode::StreamOnly(args) => interruptible(&runtime, stream_only(args)),
-        Mode::DumpState(args) => interruptible(&runtime, dump_state(args)),
     };
     // Don't wait for blocking threads: an interrupted password prompt
     // leaves one parked in a terminal read until a key is pressed.
     runtime.shutdown_background();
     code
-}
-
-/// Headless commands run for a while by design; Ctrl+C is a normal way to
-/// end them early (128 + SIGINT, the shell convention).
-fn interruptible(
-    runtime: &tokio::runtime::Runtime,
-    command: impl Future<Output = ExitCode>,
-) -> ExitCode {
-    runtime.block_on(async {
-        tokio::select! {
-            code = command => code,
-            _ = tokio::signal::ctrl_c() => {
-                eprintln!("interrupted");
-                ExitCode::from(130)
-            }
-        }
-    })
 }
 
 /// The config file, read once per run: argv normalization, connection
@@ -636,12 +494,6 @@ fn usage_exit(error: &clap::Error) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
-}
-
-/// `label: error` for stderr. Errors can carry core-supplied text, so
-/// control sequences in it are escaped.
-fn error_line(label: &str, error: &impl std::fmt::Display) -> String {
-    format!("{label}: {}", sanitize_terminal(&error.to_string()))
 }
 
 /// Print to stderr after the UI has run. The terminal may be gone (its
@@ -695,7 +547,7 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
         Ok(c) => c,
         Err(code) => return code,
     };
-    init_logging(LogTarget::UiFile, false);
+    init_logging();
     let options = resolved.connection_options(&user, &password);
     let factory: crate::app::ClientFactory =
         Box::new(move || QuasselClient::connect(options.clone()));
@@ -717,633 +569,6 @@ async fn run_ui(args: LoginArgs) -> ExitCode {
             ExitCode::from(1)
         }
     }
-}
-
-fn negotiated_report(n: &NegotiatedProtocol) -> String {
-    format!(
-        "protocol:    {:?}\npeer feats:  {:#06x}\nconn feats:  {}\n",
-        n.protocol, n.peer_features, n.connection_features
-    )
-}
-
-fn python_bool(value: bool) -> &'static str {
-    if value { "True" } else { "False" }
-}
-
-pub fn write_init_reply(out: &mut impl Write, reply: &HandshakeMessage) -> io::Result<()> {
-    match reply {
-        HandshakeMessage::ClientInitReject { error } => {
-            writeln!(
-                out,
-                "core REJECTED ClientInit: '{}'",
-                sanitize_terminal(error)
-            )
-        }
-        HandshakeMessage::ClientInitAck(ack) => write_init_ack(out, ack),
-        _ => Ok(()),
-    }
-}
-
-fn write_init_ack(out: &mut impl Write, ack: &ClientInitAck) -> io::Result<()> {
-    writeln!(out, "core accepted ClientInit:")?;
-    writeln!(out, "  configured:    {}", python_bool(ack.configured))?;
-    writeln!(out, "  core features: {:#010x}", ack.core_features)?;
-    if !ack.feature_list.is_empty() {
-        writeln!(
-            out,
-            "  feature list:  {}",
-            sanitize_terminal(&ack.feature_list.join(", "))
-        )?;
-    }
-    if let Some(version) = ack.protocol_version {
-        writeln!(out, "  proto version: {version}")?;
-    }
-    if !ack.storage_backends.is_empty() {
-        writeln!(out, "  storage backends:")?;
-        for b in &ack.storage_backends {
-            writeln!(
-                out,
-                "    - {}: {}",
-                sanitize_terminal(&b.display_name),
-                sanitize_terminal(&b.description)
-            )?;
-        }
-    }
-    if !ack.authenticators.is_empty() {
-        writeln!(out, "  authenticators:")?;
-        for a in &ack.authenticators {
-            writeln!(
-                out,
-                "    - {}: {}",
-                sanitize_terminal(&a.display_name),
-                sanitize_terminal(&a.description)
-            )?;
-        }
-    }
-    Ok(())
-}
-
-/// Open TCP, probe, and upgrade to TLS when negotiated. On a TLS downgrade
-/// (offered, not enabled) returns exit code 5 unless allowed.
-async fn connect_and_probe(
-    resolved: &Resolved,
-    allow_plaintext: bool,
-    downgrade_message: &str,
-) -> Result<BoxedStream, ExitCode> {
-    let tcp = match open_tcp_connection(&resolved.host, resolved.port, resolved.connect_timeout())
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}", error_line("connect", &e));
-            return Err(ExitCode::from(2));
-        }
-    };
-    let mut stream: BoxedStream = Box::new(tcp);
-    let offered = if resolved.no_tls {
-        ConnectionFeatures::NONE
-    } else {
-        ConnectionFeatures::ENCRYPTION
-    };
-    let negotiated = match resolved
-        .stalled("the probe", probe(&mut stream, offered))
-        .await
-    {
-        Ok(n) => n,
-        Err(e) => {
-            eprintln!("{}", error_line("protocol", &e));
-            return Err(ExitCode::from(4));
-        }
-    };
-    print!("{}", negotiated_report(&negotiated));
-    if negotiated.tls_required() {
-        let tls_options = resolved.tls_options();
-        let tls = start_tls(stream, &resolved.host, &tls_options);
-        match resolved.stalled("the TLS handshake", tls).await {
-            Ok(tls) => stream = Box::new(tls),
-            Err(e) => {
-                eprintln!("{}", error_line("protocol", &e));
-                return Err(ExitCode::from(4));
-            }
-        }
-        println!("TLS upgrade ok");
-    } else if !resolved.no_tls && !allow_plaintext {
-        // The probe reply is unauthenticated, so an active MITM can strip
-        // the Encryption bit. Fail closed.
-        eprintln!("{downgrade_message}");
-        return Err(ExitCode::from(5));
-    }
-    Ok(stream)
-}
-
-async fn probe_only(args: ProbeArgs) -> ExitCode {
-    init_logging(LogTarget::Stderr, false);
-    let resolved = match resolve_or_exit("probe-only", &args.connect, None) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    let mut stream = match connect_and_probe(
-        &resolved,
-        args.allow_plaintext,
-        "abort: core did not enable TLS but we offered it. This is a downgrade and could be a \
-         MITM. Re-run with --allow-plaintext if you actually trust this network path.",
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let exchange = async {
-        send_client_init(&mut stream, &ClientInit::new(client_version(), BUILD_DATE)).await?;
-        let reply = recv_handshake_message(&mut stream).await?;
-        let code = match &reply {
-            HandshakeMessage::ClientInitAck(_) => 0,
-            HandshakeMessage::ClientInitReject { .. } => 3,
-            other => {
-                eprintln!("unexpected handshake reply at init phase: {}", other.kind());
-                return Ok::<u8, Error>(4);
-            }
-        };
-        write_init_reply(&mut io::stdout(), &reply)?;
-        Ok(code)
-    };
-    let code = resolved
-        .stalled("init", exchange)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("{}", error_line("protocol", &e));
-            4
-        });
-    close_stream(&mut stream).await;
-    ExitCode::from(code)
-}
-
-async fn login_only(args: LoginArgs) -> ExitCode {
-    init_logging(LogTarget::Stderr, false);
-    let resolved = match resolve_or_exit("login-only", &args.connect, Some(&args.credentials)) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    let (user, password) = match credentials("login-only", &resolved).await {
-        Ok(c) => c,
-        Err(code) => return code,
-    };
-    let mut stream = match connect_and_probe(
-        &resolved,
-        false,
-        "abort: core did not enable TLS but we offered it. This is a downgrade and would leak \
-         the password. Re-run with --no-tls if you actually trust this network path.",
-    )
-    .await
-    {
-        Ok(s) => s,
-        Err(code) => return code,
-    };
-    let code = resolved
-        .stalled("login", login_exchange(&mut stream, user, password))
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("{}", error_line("protocol", &e));
-            4
-        });
-    close_stream(&mut stream).await;
-    ExitCode::from(code)
-}
-
-async fn login_exchange(
-    stream: &mut BoxedStream,
-    user: String,
-    password: String,
-) -> Result<u8, Error> {
-    let mut stdout = io::stdout();
-    send_client_init(stream, &ClientInit::new(client_version(), BUILD_DATE)).await?;
-    let init = recv_handshake_message(stream).await?;
-    match &init {
-        HandshakeMessage::ClientInitReject { .. } => {
-            write_init_reply(&mut stdout, &init)?;
-            return Ok(3);
-        }
-        HandshakeMessage::ClientInitAck(ack) => {
-            write_init_ack(&mut stdout, ack)?;
-            if !ack.configured {
-                eprintln!(
-                    "abort: core is not configured yet. quasseltui does not implement the \
-                     CoreSetupData wizard — finish setup in quasselclient first."
-                );
-                return Ok(6);
-            }
-        }
-        other => {
-            eprintln!(
-                "unexpected handshake message during init phase: {}",
-                other.kind()
-            );
-            return Ok(4);
-        }
-    }
-    send_client_login(stream, &ClientLogin { user, password }).await?;
-    match recv_handshake_message(stream).await {
-        Err(Error::Auth(msg)) => {
-            eprintln!("{}", error_line("login rejected", &msg));
-            return Ok(7);
-        }
-        Err(e) => return Err(e),
-        Ok(HandshakeMessage::ClientLoginAck) => println!("login ok"),
-        Ok(HandshakeMessage::CoreSetupReject { error }) => {
-            eprintln!("core setup rejected: '{}'", sanitize_terminal(&error));
-            return Ok(6);
-        }
-        Ok(other) => {
-            eprintln!(
-                "unexpected handshake message during login phase: {}",
-                other.kind()
-            );
-            return Ok(4);
-        }
-    }
-    match recv_handshake_message(stream).await? {
-        HandshakeMessage::SessionInit(session) => {
-            write_session_init(&mut stdout, &session)?;
-            Ok(0)
-        }
-        other => {
-            eprintln!("expected SessionInit, got {}", other.kind());
-            Ok(4)
-        }
-    }
-}
-
-fn identity_field(ident: &VariantMap, a: &str, b: &str) -> Option<Variant> {
-    ident
-        .get(a)
-        .filter(|v| v.truthy())
-        .or_else(|| ident.get(b))
-        .cloned()
-}
-
-/// The `SessionInit` summary. Names are core-controlled (and ultimately
-/// IRC-user-controlled), so everything is sanitized.
-pub fn write_session_init(out: &mut impl Write, session: &SessionInit) -> io::Result<()> {
-    writeln!(
-        out,
-        "connected — {} identities, {} networks, {} buffers",
-        session.identities.len(),
-        session.network_ids.len(),
-        session.buffer_infos.len()
-    )?;
-    if !session.identities.is_empty() {
-        writeln!(out, "identities:")?;
-        for ident in &session.identities {
-            let name = identity_field(ident, "identityName", "IdentityName")
-                .and_then(|v| v.coerce_string())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "?".into());
-            let id = identity_field(ident, "identityId", "IdentityId")
-                .and_then(|v| v.coerce_string())
-                .unwrap_or_else(|| "None".into());
-            writeln!(
-                out,
-                "  - {} (id={})",
-                sanitize_terminal(&name),
-                sanitize_terminal(&id)
-            )?;
-        }
-    }
-    if !session.network_ids.is_empty() {
-        writeln!(out, "networks:")?;
-        let mut ids = session.network_ids.clone();
-        ids.sort();
-        for id in ids {
-            writeln!(out, "  - network_id={id}")?;
-        }
-    }
-    if !session.buffer_infos.is_empty() {
-        writeln!(out, "buffers:")?;
-        let mut by_network: BTreeMap<i32, Vec<&BufferInfo>> = BTreeMap::new();
-        for buf in &session.buffer_infos {
-            by_network.entry(buf.network_id.0).or_default().push(buf);
-        }
-        for (net, mut buffers) in by_network {
-            writeln!(out, "  network_id={net} ({} buffers)", buffers.len())?;
-            buffers.sort_by_key(|b| (b.kind.value(), b.name.to_lowercase()));
-            for buf in buffers {
-                let name = if buf.name.is_empty() {
-                    "(unnamed)"
-                } else {
-                    &buf.name
-                };
-                writeln!(
-                    out,
-                    "    [{}] {} (buffer_id={})",
-                    buf.kind.label(),
-                    sanitize_terminal(name),
-                    buf.buffer_id
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Map a terminal disconnect to the `login-only` exit codes.
-pub fn disconnect_exit_code(error: Option<&Error>) -> u8 {
-    match error {
-        Some(Error::Transport(_)) => 2,
-        Some(Error::InitRejected(_)) => 3,
-        Some(Error::TlsDowngrade(_)) => 5,
-        Some(Error::NotConfigured(_)) => 6,
-        Some(Error::Auth(_)) => 7,
-        _ => 4,
-    }
-}
-
-async fn stream_only(args: StreamArgs) -> ExitCode {
-    init_logging(LogTarget::Stderr, args.verbose);
-    let login = &args.login;
-    let resolved = match resolve_or_exit("stream-only", &login.connect, Some(&login.credentials)) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    let (user, password) = match credentials("stream-only", &resolved).await {
-        Ok(c) => c,
-        Err(code) => return code,
-    };
-    let (handle, mut events) =
-        QuasselConnection::new(resolved.connection_options(&user, &password)).start();
-    let verbose = args.verbose;
-    let max_events = args.max_events;
-    let run = async {
-        let mut count = 0u64;
-        while let Some(event) = events.recv().await {
-            write_stream_event(&mut io::stdout(), &event, verbose).ok();
-            match &event {
-                ProtocolEvent::Disconnected { error, .. } => {
-                    return disconnect_exit_code(error.as_deref());
-                }
-                // The handshake banner isn't one of the streamed events
-                // that --max-events counts.
-                ProtocolEvent::SessionReady { .. } => continue,
-                _ => {}
-            }
-            count += 1;
-            if max_events.is_some_and(|max| count >= max) {
-                println!(
-                    "[max-events={} reached, stopping]",
-                    max_events.unwrap_or_default()
-                );
-                return 0;
-            }
-        }
-        0
-    };
-    let code = match tokio::time::timeout(Duration::from_secs_f64(args.duration), run).await {
-        Ok(code) => code,
-        Err(_) => {
-            println!("[duration={}s elapsed, stopping]", args.duration);
-            0
-        }
-    };
-    handle.close();
-    // Let the connection finish closing, but don't hang on a stalled one.
-    let _ = tokio::time::timeout(Duration::from_secs(3), async {
-        while events.recv().await.is_some() {}
-    })
-    .await;
-    ExitCode::from(code)
-}
-
-fn ascii(bytes: &[u8]) -> String {
-    sanitize_terminal(&String::from_utf8_lossy(bytes))
-}
-
-pub fn write_stream_event(
-    out: &mut impl Write,
-    event: &ProtocolEvent,
-    verbose: bool,
-) -> io::Result<()> {
-    match event {
-        ProtocolEvent::SessionReady {
-            session,
-            peer_features,
-            ..
-        } => {
-            write_session_init(out, session)?;
-            writeln!(out, "negotiated features: {peer_features}")?;
-            writeln!(out, "[streaming events…]")
-        }
-        ProtocolEvent::Sync(m) => {
-            let suffix = if verbose {
-                format!("  params={}", sanitize_terminal(&format!("{:?}", m.params)))
-            } else {
-                String::new()
-            };
-            writeln!(
-                out,
-                "Sync  {}::{} {} ({} params){suffix}",
-                ascii(&m.class_name),
-                sanitize_terminal(&m.object_name),
-                ascii(&m.slot_name),
-                m.params.len()
-            )
-        }
-        ProtocolEvent::Rpc(m) => {
-            let suffix = if verbose {
-                format!("  params={}", sanitize_terminal(&format!("{:?}", m.params)))
-            } else {
-                String::new()
-            };
-            writeln!(
-                out,
-                "Rpc   {} ({} params){suffix}",
-                ascii(&m.signal_name),
-                m.params.len()
-            )
-        }
-        ProtocolEvent::InitData(m) => {
-            let suffix = if verbose {
-                format!(
-                    "  data={}",
-                    sanitize_terminal(&format!("{:?}", m.init_data))
-                )
-            } else {
-                String::new()
-            };
-            writeln!(
-                out,
-                "Init  {}::{} ({} keys){suffix}",
-                ascii(&m.class_name),
-                sanitize_terminal(&m.object_name),
-                m.init_data.len()
-            )
-        }
-        ProtocolEvent::InitRequest(m) => writeln!(
-            out,
-            "IReq  {}::{}",
-            ascii(&m.class_name),
-            sanitize_terminal(&m.object_name)
-        ),
-        ProtocolEvent::HeartBeat(ts) => writeln!(
-            out,
-            "Heart ts={}",
-            ts.to_naive().format("%Y-%m-%dT%H:%M:%S%.3f")
-        ),
-        ProtocolEvent::Disconnected { reason, .. } => {
-            writeln!(out, "-- disconnected: {}", sanitize_terminal(reason))
-        }
-    }
-}
-
-async fn dump_state(args: DumpArgs) -> ExitCode {
-    init_logging(LogTarget::Stderr, false);
-    let login = &args.login;
-    let resolved = match resolve_or_exit("dump-state", &login.connect, Some(&login.credentials)) {
-        Ok(r) => r,
-        Err(code) => return code,
-    };
-    let (user, password) = match credentials("dump-state", &resolved).await {
-        Ok(c) => c,
-        Err(code) => return code,
-    };
-    let mut client = QuasselClient::connect(resolved.connection_options(&user, &password));
-    let mut state = ClientState::default();
-    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
-    let mut last_disconnect: Option<(String, Option<Arc<Error>>)> = None;
-    let run = async {
-        while let Some(event) = client.next_event(&mut state).await {
-            *counts.entry(event.name()).or_default() += 1;
-            if let ClientEvent::Disconnected { reason, error } = event {
-                last_disconnect = Some((reason, error));
-                return;
-            }
-        }
-    };
-    let _ = tokio::time::timeout(Duration::from_secs_f64(args.duration), run).await;
-    client.close();
-    // Let the connection finish closing (bounded) before printing.
-    let _ = tokio::time::timeout(Duration::from_secs(3), async {
-        while client.recv().await.is_some() {}
-    })
-    .await;
-
-    let mut code = 0;
-    if let Some((reason, error)) = &last_disconnect {
-        code = disconnect_exit_code(error.as_deref());
-        println!(
-            "-- disconnected before duration elapsed: {}",
-            sanitize_terminal(reason)
-        );
-    }
-    if let Err(e) = write_state_snapshot(&mut io::stdout(), &state, args.max_messages, &counts) {
-        eprintln!("dump-state: {e}");
-    }
-    ExitCode::from(code)
-}
-
-/// The `ClientState` snapshot. Every core-provided string is sanitized so a
-/// hostile IRC payload can't inject terminal escapes into the output.
-pub fn write_state_snapshot(
-    out: &mut impl Write,
-    state: &ClientState,
-    max_messages: usize,
-    counts: &BTreeMap<&'static str, usize>,
-) -> io::Result<()> {
-    writeln!(out)?;
-    writeln!(out, "=== ClientState snapshot ===")?;
-    writeln!(
-        out,
-        "peer_features: {}",
-        sanitize_terminal(&state.peer_features.to_string())
-    )?;
-    writeln!(
-        out,
-        "counts: networks={}, buffers={}, identities={}, messages={}",
-        state.networks.len(),
-        state.buffers.len(),
-        state.identities.len(),
-        state.total_message_count()
-    )?;
-    if !counts.is_empty() {
-        writeln!(out, "event_counts:")?;
-        for (name, count) in counts {
-            writeln!(out, "  {}: {count}", sanitize_terminal(name))?;
-        }
-    }
-    if !state.identities.is_empty() {
-        writeln!(out, "identities:")?;
-        for (id, identity) in &state.identities {
-            let nicks = if identity.nicks.is_empty() {
-                "(no nicks)".to_string()
-            } else {
-                identity.nicks.join(", ")
-            };
-            let name = if identity.identity_name.is_empty() {
-                "(unnamed)"
-            } else {
-                &identity.identity_name
-            };
-            writeln!(
-                out,
-                "  - [{id}] {} ({})",
-                sanitize_terminal(name),
-                sanitize_terminal(&nicks)
-            )?;
-        }
-    }
-    if state.networks.is_empty() {
-        return writeln!(out, "networks: (none)");
-    }
-    writeln!(out, "networks:")?;
-    let or = |s: &str, fallback: &str| {
-        if s.is_empty() {
-            fallback.to_string()
-        } else {
-            sanitize_terminal(s)
-        }
-    };
-    for (network_id, network) in &state.networks {
-        writeln!(
-            out,
-            "  - [{network_id}] {}  state={} nick={} server={}",
-            or(&network.network_name, "(unnamed)"),
-            network.connection_state.name(),
-            or(&network.my_nick, "?"),
-            or(&network.current_server, "?")
-        )?;
-        let mut buffers: Vec<&BufferInfo> = state
-            .buffers
-            .values()
-            .filter(|b| b.network_id == *network_id)
-            .collect();
-        buffers.sort_by_key(|b| (b.kind.value(), b.name.to_lowercase()));
-        for buf in buffers {
-            let messages = state.messages_for_buffer(buf.buffer_id);
-            writeln!(
-                out,
-                "      [{}] {} (buffer_id={}, {} msgs)",
-                buf.kind.label(),
-                or(&buf.name, "(unnamed)"),
-                buf.buffer_id,
-                messages.len()
-            )?;
-            if max_messages > 0 {
-                for msg in &messages[messages.len().saturating_sub(max_messages)..] {
-                    let prefix = if msg.sender_prefixes.is_empty() {
-                        " ".to_string()
-                    } else {
-                        sanitize_terminal(&msg.sender_prefixes)
-                    };
-                    writeln!(
-                        out,
-                        "          {} {prefix}{}: {}",
-                        msg.timestamp.format("%Y-%m-%d %H:%M:%S"),
-                        sanitize_terminal(&msg.sender),
-                        sanitize_terminal(&msg.contents)
-                    )?;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

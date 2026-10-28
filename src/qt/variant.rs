@@ -113,7 +113,8 @@ impl Variant {
         }
     }
 
-    /// Truthiness, as the Python client's `bool(value)` applied it.
+    /// Whether the value is set: false for null, zero, and empty strings
+    /// and containers.
     pub fn truthy(&self) -> bool {
         match self {
             Self::Null => false,

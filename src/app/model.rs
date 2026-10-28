@@ -109,6 +109,15 @@ pub enum Effect {
         text: String,
     },
     RequestBacklog(BufferId),
+    /// Fetch the newest `limit` messages from `after` (inclusive) up to
+    /// `before` (exclusive; `None` for no upper end): history missed while
+    /// disconnected.
+    FillGap {
+        buffer: BufferId,
+        after: MsgId,
+        before: Option<MsgId>,
+        limit: i32,
+    },
     /// Fetch up to `limit` messages older than `before` (the oldest
     /// message we have).
     RequestOlderBacklog {
@@ -325,6 +334,13 @@ pub struct App {
     /// malformed one is dropped) expires after [`BACKLOG_TIMEOUT`].
     initial_pending: HashMap<BufferId, Instant>,
     pub(crate) older_pending: HashMap<BufferId, Instant>,
+    /// Buffers that may be missing messages from a disconnect, each with
+    /// its newest message from before it. Filled a page at a time, newest
+    /// first, starting with the buffer's initial request; while that runs,
+    /// `gap_pending` holds the page in flight and older history waits, so
+    /// replies can still be told apart by order.
+    pub(crate) gaps: HashMap<BufferId, MsgId>,
+    gap_pending: HashMap<BufferId, Instant>,
     /// Buffers whose history the core has no more of.
     history_start: HashSet<BufferId>,
     /// The previous sidebar click, for double-click detection.
@@ -373,6 +389,8 @@ impl App {
             pending_input: None,
             initial_pending: HashMap::new(),
             older_pending: HashMap::new(),
+            gaps: HashMap::new(),
+            gap_pending: HashMap::new(),
             history_start: HashSet::new(),
             last_click: None,
             pending_yank: false,
@@ -465,10 +483,21 @@ impl App {
         for id in &older {
             self.older_pending.remove(id);
         }
-        if initial.is_empty() && older.is_empty() {
+        let gap: Vec<BufferId> = self
+            .gap_pending
+            .iter()
+            .filter(|(_, sent)| stale(sent))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &gap {
+            // The gap stays: the next visit starts filling it again.
+            self.gap_pending.remove(id);
+            self.state.release_backlog(*id);
+        }
+        if initial.is_empty() && older.is_empty() && gap.is_empty() {
             return false;
         }
-        tracing::warn!("history requests timed out: {initial:?} {older:?}");
+        tracing::warn!("history requests timed out: {initial:?} {older:?} {gap:?}");
         self.notify(
             "The core didn't answer a history request",
             Severity::Warning,
@@ -483,6 +512,7 @@ impl App {
             ClientEvent::SessionOpened { .. } => {
                 self.session_opened = true;
                 self.reconnected();
+                self.note_gaps();
                 if let Some(active) = self.active_buffer_id {
                     // Reconnect: keep the user's buffer and refresh it, which
                     // re-requests the backlog to fill the gap since the drop.
@@ -499,6 +529,8 @@ impl App {
                 self.last_alert.remove(buffer_id);
                 self.initial_pending.remove(buffer_id);
                 self.older_pending.remove(buffer_id);
+                self.gaps.remove(buffer_id);
+                self.gap_pending.remove(buffer_id);
                 self.history_start.remove(buffer_id);
                 if self.active_buffer_id == Some(*buffer_id) {
                     let replacement = pick_default_buffer(&self.state);
@@ -509,13 +541,17 @@ impl App {
                 }
             }
             ClientEvent::MessageReceived(message) => self.handle_message(message),
-            ClientEvent::BacklogReceived { buffer_id, count } => {
-                self.older_backlog_arrived(*buffer_id, *count);
+            ClientEvent::BacklogReceived {
+                buffer_id,
+                count,
+                received,
+                oldest,
+            } => {
+                let mut effects = self.backlog_arrived(*buffer_id, *count, *received, *oldest);
                 if Some(*buffer_id) == self.active_buffer_id && *count > 0 {
-                    self.active_updated(Some(*buffer_id))
-                } else {
-                    Vec::new()
+                    effects.extend(self.active_updated(Some(*buffer_id)));
                 }
+                effects
             }
             ClientEvent::Disconnected { reason, error } => {
                 let fatal = !self.session_opened && self.presession_fatal;
@@ -660,7 +696,17 @@ impl App {
             // spam notices on every post-drop buffer switch.
             if self.live && !self.connection_lost && self.state.claim_backlog(id) {
                 self.initial_pending.insert(id, Instant::now());
-                effects.push(Effect::RequestBacklog(id));
+                // After a disconnect, ask only for what came since; the
+                // reply shows whether more pages are needed.
+                effects.push(match self.gaps.get(&id) {
+                    Some(&after) => Effect::FillGap {
+                        buffer: id,
+                        after,
+                        before: None,
+                        limit: DEFAULT_BACKLOG_LIMIT,
+                    },
+                    None => Effect::RequestBacklog(id),
+                });
             }
         }
         effects
@@ -803,6 +849,7 @@ impl App {
         // Requests on the old connection will never be answered.
         self.initial_pending.clear();
         self.older_pending.clear();
+        self.gap_pending.clear();
         self.input.placeholder = "Reconnecting…".into();
         // A still-down core must re-enter the disconnected state rather
         // than exit and destroy the scrollback.
@@ -907,13 +954,91 @@ impl App {
         true
     }
 
+    /// A session opened: every buffer with history may have missed
+    /// messages while we were away. A gap left from an earlier outage keeps
+    /// its older bound, so it is filled too.
+    fn note_gaps(&mut self) {
+        for (id, messages) in &self.state.messages {
+            if let Some(last) = messages.last() {
+                self.gaps.entry(*id).or_insert(last.msg_id);
+            }
+        }
+    }
+
     /// Route a backlog reply to the request it answers (see
     /// `initial_pending`). An older-history reply with nothing new means the
     /// core has no more.
-    fn older_backlog_arrived(&mut self, buffer: BufferId, count: usize) {
-        if self.initial_pending.remove(&buffer).is_some() {
-            return;
+    fn backlog_arrived(
+        &mut self,
+        buffer: BufferId,
+        count: usize,
+        received: usize,
+        oldest: Option<MsgId>,
+    ) -> Vec<Effect> {
+        if self.initial_pending.remove(&buffer).is_some()
+            || self.gap_pending.remove(&buffer).is_some()
+        {
+            return self.continue_gap(buffer, received, oldest);
         }
+        self.older_backlog_arrived(buffer, count);
+        Vec::new()
+    }
+
+    /// After a page of a gap fill: ask for the next one down, or finish.
+    /// The gap is closed once a page reaches its older bound or comes back
+    /// short, or once the history below it was trimmed away by the cap.
+    fn continue_gap(
+        &mut self,
+        buffer: BufferId,
+        received: usize,
+        oldest: Option<MsgId>,
+    ) -> Vec<Effect> {
+        let Some(&after) = self.gaps.get(&buffer) else {
+            return Vec::new();
+        };
+        let full_page = i32::try_from(received).map_or(true, |r| r >= DEFAULT_BACKLOG_LIMIT);
+        let below_kept = self
+            .state
+            .messages_for_buffer(buffer)
+            .first()
+            .is_some_and(|m| m.msg_id <= after);
+        match oldest {
+            Some(oldest)
+                if full_page
+                    && oldest > after
+                    && below_kept
+                    && self.live
+                    && !self.connection_lost =>
+            {
+                self.gap_pending.insert(buffer, Instant::now());
+                vec![Effect::FillGap {
+                    buffer,
+                    after,
+                    before: Some(oldest),
+                    limit: DEFAULT_BACKLOG_LIMIT,
+                }]
+            }
+            _ => {
+                self.gaps.remove(&buffer);
+                Vec::new()
+            }
+        }
+    }
+
+    /// A page of a gap fill could not be requested. The gap stays, and the
+    /// next visit to the buffer starts filling it again.
+    pub fn gap_failed(&mut self, buffer: BufferId, error: &str) {
+        tracing::warn!("gap backlog request failed for buffer {buffer}: {error}");
+        self.initial_pending.remove(&buffer);
+        self.gap_pending.remove(&buffer);
+        self.state.release_backlog(buffer);
+        self.notify(
+            &format!("Could not load messages missed while disconnected: {error}"),
+            Severity::Warning,
+        );
+    }
+
+    fn older_backlog_arrived(&mut self, buffer: BufferId, count: usize) {
         // Nothing new with room to spare: the core has nothing older. (At
         // the cap, a page trimmed away by racing live traffic proves
         // nothing.)
@@ -936,6 +1061,7 @@ impl App {
         if !self.live
             || self.connection_lost
             || self.older_pending.contains_key(&buffer)
+            || self.gap_filling(buffer)
             || self.history_start.contains(&buffer)
             || self.log.top_line(&self.state) != 0
         {
@@ -965,6 +1091,15 @@ impl App {
             before: oldest,
             limit,
         }]
+    }
+
+    /// A gap fill is under way. Its next page is only asked for once the
+    /// previous one is answered, so an older-history request sent in
+    /// between would get its reply mistaken for a gap page.
+    fn gap_filling(&self, buffer: BufferId) -> bool {
+        self.gaps.contains_key(&buffer)
+            && (self.initial_pending.contains_key(&buffer)
+                || self.gap_pending.contains_key(&buffer))
     }
 
     pub fn older_backlog_failed(&mut self, buffer: BufferId, error: &str) {
@@ -1312,7 +1447,8 @@ impl App {
         let lines: Vec<String> = self
             .input
             .value
-            .lines()
+            // Some terminals paste line breaks as a bare CR.
+            .split(['\r', '\n'])
             .filter(|line| !line.trim().is_empty())
             .map(str::to_string)
             .collect();

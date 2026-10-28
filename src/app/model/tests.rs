@@ -683,6 +683,11 @@ fn multi_line_paste_waits_for_confirmation() {
     let paste = app.pending_paste.clone().unwrap();
     assert_eq!(paste.lines, ["see: fn main() {", "/quit", "}"]);
     assert!(app.input.value.is_empty());
+    app.on_key(key(KeyCode::Esc));
+    // Terminals that paste line breaks as a bare CR get lines too.
+    app.on_paste("one\rtwo\r\rthree\r");
+    let paste = app.pending_paste.clone().unwrap();
+    assert_eq!(paste.lines, ["see: one", "two", "three"]);
     // Other keys do nothing while it waits.
     assert!(app.on_key(key(KeyCode::Char('x'))).is_empty());
     assert!(app.input.value.is_empty());
@@ -990,6 +995,8 @@ fn older(buffer: i32, before: i64) -> Effect {
 
 /// Simulate a backlog reply: merge messages, then tell the app.
 fn backlog_reply(app: &mut App, buffer: i32, ids: std::ops::RangeInclusive<i64>) -> Vec<Effect> {
+    let received = ids.clone().count();
+    let oldest = Some(MsgId(*ids.start()));
     let list = app.state.messages.entry(BufferId(buffer)).or_default();
     let before = list.len();
     for id in ids {
@@ -999,10 +1006,114 @@ fn backlog_reply(app: &mut App, buffer: i32, ids: std::ops::RangeInclusive<i64>)
     }
     list.sort_by_key(|m| m.msg_id);
     let count = list.len() - before;
+    app.state.enforce_cap(BufferId(buffer));
     app.on_client_event(&ClientEvent::BacklogReceived {
         buffer_id: BufferId(buffer),
         count,
+        received,
+        oldest,
     })
+}
+
+/// Drop the connection and open a new session over the same state, the
+/// way the dispatcher's re-seed would. Returns the session's effects.
+fn drop_and_reopen(app: &mut App) -> Vec<Effect> {
+    app.on_client_event(&disconnected("gone"));
+    assert_eq!(app.reconnect(), [Effect::Reconnect]);
+    app.state.backlog_requested.clear();
+    app.on_client_event(&opened())
+}
+
+fn gap(buffer: i32, after: i64, before: Option<i64>) -> Effect {
+    Effect::FillGap {
+        buffer: BufferId(buffer),
+        after: MsgId(after),
+        before: before.map(MsgId),
+        limit: DEFAULT_BACKLOG_LIMIT,
+    }
+}
+
+#[test]
+fn a_reconnect_fills_the_messages_missed_meanwhile() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=5);
+    app.log.set_viewport(80, 5);
+    app.set_focus(Focus::Log);
+
+    // Only what came after the newest message we have is asked for.
+    assert_eq!(drop_and_reopen(&mut app), [gap(10, 5, None)]);
+    // A full page that doesn't reach back to it: ask for the next page
+    // down, under the oldest message just received.
+    assert_eq!(
+        backlog_reply(&mut app, 10, 301..=400),
+        [gap(10, 5, Some(301))]
+    );
+    // Older history waits until the gap is filled, so replies can't be
+    // mistaken for each other.
+    app.on_key(key(KeyCode::Char('g')));
+    assert!(app.on_key(key(KeyCode::Char('g'))).is_empty());
+    assert!(app.older_pending.is_empty());
+    // A short page means the core has nothing more in between.
+    assert!(backlog_reply(&mut app, 10, 250..=300).is_empty());
+    assert!(app.gaps.is_empty());
+    assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 1)]);
+}
+
+#[test]
+fn a_gap_page_that_reaches_the_old_history_ends_the_fill() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=5);
+    assert_eq!(drop_and_reopen(&mut app), [gap(10, 5, None)]);
+    // Exactly a page, starting at the newest message we already had.
+    assert!(backlog_reply(&mut app, 10, 5..=104).is_empty());
+    assert!(app.gaps.is_empty());
+}
+
+#[test]
+fn other_buffers_fill_their_gap_when_visited() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=5);
+    app.select_buffer(BufferId(11));
+    backlog_reply(&mut app, 11, 20..=30);
+    app.select_buffer(BufferId(10));
+
+    drop_and_reopen(&mut app);
+    // Live traffic before the visit doesn't move the gap's lower end.
+    deliver(&mut app, message(500, 11, MessageFlags::NONE));
+    let effects = app.select_buffer(BufferId(11));
+    assert_eq!(effects[0], gap(11, 30, None));
+}
+
+#[test]
+fn a_failed_gap_fill_is_retried_on_the_next_visit() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=5);
+    drop_and_reopen(&mut app);
+    backlog_reply(&mut app, 10, 301..=400);
+    app.gap_failed(BufferId(10), "boom");
+    assert!(app.notices.last().unwrap().contains("boom"));
+    assert!(app.gaps.contains_key(&BufferId(10)));
+
+    app.select_buffer(BufferId(11));
+    let effects = app.select_buffer(BufferId(10));
+    assert_eq!(effects[0], gap(10, 5, None));
+}
+
+#[test]
+fn a_gap_too_big_for_the_cap_stops_once_the_old_history_is_gone() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=5);
+    drop_and_reopen(&mut app);
+    // The first page alone pushes everything from before the drop past the
+    // cap; the gap went with it.
+    app.state.max_messages_per_buffer = 100;
+    assert!(backlog_reply(&mut app, 10, 301..=400).is_empty());
+    assert!(app.gaps.is_empty());
 }
 
 #[test]

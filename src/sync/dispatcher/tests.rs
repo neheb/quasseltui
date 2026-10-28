@@ -551,7 +551,9 @@ fn backlog_count_is_what_survives_the_cap() {
         &h.take()[..],
         [ClientEvent::BacklogReceived {
             buffer_id: BufferId(10),
-            count: 1
+            count: 1,
+            received: 3,
+            oldest: Some(MsgId(1)),
         }]
     ));
     let ids: Vec<i64> = h.state.messages[&BufferId(10)]
@@ -591,7 +593,10 @@ fn backlog_merge_dedupes_and_sorts() {
         &h.take()[..],
         [ClientEvent::BacklogReceived {
             buffer_id: BufferId(10),
-            count: 2
+            count: 2,
+            // Duplicates count; other buffers' messages don't.
+            received: 4,
+            oldest: Some(MsgId(3)),
         }]
     ));
     let msgs = &h.state.messages[&BufferId(10)];

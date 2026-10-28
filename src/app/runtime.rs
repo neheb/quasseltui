@@ -29,7 +29,7 @@ use crate::app::theme::{Theme, ThemeWatcher};
 use crate::app::view::{self, Areas};
 use crate::client::{ClientState, DEFAULT_BACKLOG_LIMIT, QuasselClient, Request};
 use crate::protocol::connection::ProtocolEvent;
-use crate::protocol::types::BufferId;
+use crate::protocol::types::{BufferId, MsgId};
 use crate::util::text::is_unsafe;
 
 /// Builds a fresh client over the same credentials (for Ctrl+R).
@@ -41,6 +41,7 @@ enum Failure {
     Command { text: String, error: String },
     Backlog { buffer: BufferId, error: String },
     OlderBacklog { buffer: BufferId, error: String },
+    Gap { buffer: BufferId, error: String },
 }
 
 enum Input {
@@ -227,6 +228,10 @@ async fn event_loop(
                 app.older_backlog_failed(buffer, &error);
                 dirty = true;
             }
+            Input::Outcome(Failure::Gap { buffer, error }) => {
+                app.gap_failed(buffer, &error);
+                dirty = true;
+            }
             Input::Theme(new_theme) => {
                 theme = new_theme;
                 dirty = true;
@@ -362,6 +367,16 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
             on_failure(sent, move |error| {
                 report(Failure::OlderBacklog { buffer, error });
             });
+        }
+        Effect::FillGap {
+            buffer,
+            after,
+            before,
+            limit,
+        } => {
+            let sent =
+                handle.request_backlog_range(buffer, after, before.unwrap_or(MsgId(-1)), limit);
+            on_failure(sent, move |error| report(Failure::Gap { buffer, error }));
         }
         Effect::RequestBacklog(buffer) => {
             let sent = handle.request_backlog(buffer, DEFAULT_BACKLOG_LIMIT);

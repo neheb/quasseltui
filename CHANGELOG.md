@@ -56,6 +56,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Messages missed during a disconnect are filled in.** After a
+  reconnect each buffer asks only for what came since its newest message,
+  a page at a time, instead of the newest 100, which left a silent hole
+  when more than that arrived meanwhile.
+- **Multi-line pastes from terminals that send line breaks as CR** (VTE,
+  xterm) are split into lines instead of being joined into one.
 - **A read marker moved in another client moves here too** (and so does
   one cleared there); only the marker from session start was used before.
 - **History memory is bounded per line**: message bodies are cut at 8 KiB

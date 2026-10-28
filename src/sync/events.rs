@@ -104,6 +104,12 @@ pub enum ClientEvent {
     BacklogReceived {
         buffer_id: BufferId,
         count: usize,
+        /// Messages for this buffer in the reply, duplicates included:
+        /// compared with the request's limit, it tells whether the core had
+        /// more in the requested range.
+        received: usize,
+        /// The oldest message id in the reply.
+        oldest: Option<MsgId>,
     },
     IdentityAdded {
         identity_id: IdentityId,

@@ -230,7 +230,7 @@ impl ClientHandle {
     /// `BacklogReceived` event. Callers dedupe with
     /// `ClientState::claim_backlog` and release the latch on failure.
     pub fn request_backlog(&self, buffer_id: BufferId, limit: i32) -> Request {
-        self.backlog_request(buffer_id, MsgId(-1), limit)
+        self.request_backlog_range(buffer_id, MsgId(-1), MsgId(-1), limit)
     }
 
     /// Ask for up to `limit` messages older than `before`, to extend the
@@ -243,17 +243,25 @@ impl ClientHandle {
         before: MsgId,
         limit: i32,
     ) -> Request {
-        self.backlog_request(buffer_id, before, limit)
+        self.request_backlog_range(buffer_id, MsgId(-1), before, limit)
     }
 
-    fn backlog_request(&self, buffer_id: BufferId, last: MsgId, limit: i32) -> Request {
+    /// Ask for the newest `limit` messages with ids from `first` up to, not
+    /// including, `last`. -1 leaves that end open.
+    pub fn request_backlog_range(
+        &self,
+        buffer_id: BufferId,
+        first: MsgId,
+        last: MsgId,
+        limit: i32,
+    ) -> Request {
         let sync = SignalProxyMessage::Sync(SyncMessage {
             class_name: b"BacklogManager".to_vec(),
             object_name: String::new(),
             slot_name: b"requestBacklog".to_vec(),
             params: vec![
                 Variant::User(UserValue::BufferId(buffer_id)),
-                Variant::User(UserValue::MsgId(MsgId(-1))),
+                Variant::User(UserValue::MsgId(first)),
                 Variant::User(UserValue::MsgId(last)),
                 Variant::Int(limit),
                 Variant::Int(0),

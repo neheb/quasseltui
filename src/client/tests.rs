@@ -309,6 +309,10 @@ async fn requests_are_written_with_the_right_shapes() {
         .set_marker_line(BufferId(10), MsgId(41))
         .await
         .unwrap();
+    handle
+        .request_backlog_range(BufferId(10), MsgId(7), MsgId(90), 50)
+        .await
+        .unwrap();
     handle.close();
     drain(&mut client, &mut state).await;
 
@@ -371,6 +375,16 @@ async fn requests_are_written_with_the_right_shapes() {
                 vec![
                     Variant::User(UserValue::BufferId(BufferId(10))),
                     Variant::User(UserValue::MsgId(MsgId(41)))
+                ]
+            ),
+            (
+                b"requestBacklog".to_vec(),
+                vec![
+                    Variant::User(UserValue::BufferId(BufferId(10))),
+                    Variant::User(UserValue::MsgId(MsgId(7))),
+                    Variant::User(UserValue::MsgId(MsgId(90))),
+                    Variant::Int(50),
+                    Variant::Int(0),
                 ]
             ),
         ]

@@ -513,8 +513,15 @@ impl Dispatcher {
         let mut seen: std::collections::HashSet<MsgId> =
             existing.iter().map(|m| m.msg_id).collect();
         let mut added = std::collections::HashSet::new();
+        let mut received = 0;
+        let mut oldest: Option<MsgId> = None;
         for raw in &raw_messages {
-            if raw.buffer_info.buffer_id != buffer_id || !seen.insert(raw.msg_id) {
+            if raw.buffer_info.buffer_id != buffer_id {
+                continue;
+            }
+            received += 1;
+            oldest = Some(oldest.map_or(raw.msg_id, |o| o.min(raw.msg_id)));
+            if !seen.insert(raw.msg_id) {
                 continue;
             }
             existing.push(IrcMessage::from(raw));
@@ -534,7 +541,12 @@ impl Dispatcher {
                 .filter(|m| added.contains(&m.msg_id))
                 .count()
         };
-        out.push(ClientEvent::BacklogReceived { buffer_id, count });
+        out.push(ClientEvent::BacklogReceived {
+            buffer_id,
+            count,
+            received,
+            oldest,
+        });
     }
 
     // -- InitData --------------------------------------------------------------

@@ -5,6 +5,24 @@ All notable changes to quasseltui are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **The config file is now TOML**: `~/.config/quasseltui/config.toml`.
+  `config.ini` is no longer read; quasseltui stops with a hint if it
+  finds one. To convert, quote string values, move the `[quasseltui]`
+  settings to the top of the file without a header, and rename
+  `[server:NAME]` to `[server.NAME]`. `[DEFAULT]` is gone; repeat shared
+  settings in each server table.
+- **Leaving a channel moves its read marker** to the newest message that
+  was on screen, like Quassel's own client. It never moves back.
+
+### Fixed
+
+- **A channel no longer opens empty** when its latest messages are all
+  hidden joins and quits: older history is fetched until the view fills.
+
 ## [0.11.0] - 2026-10-27
 
 ### Changed

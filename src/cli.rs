@@ -6,7 +6,7 @@
 //! - `ui-demo`: the UI on static placeholder data, no core needed.
 //!
 //! With a config file, bare `quasseltui` runs `ui` against the default
-//! server and `quasseltui NAME` runs it against `[server:NAME]`.
+//! server and `quasseltui NAME` runs it against `[server.NAME]`.
 
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
@@ -32,7 +32,7 @@ pub fn client_version() -> String {
 }
 
 const EPILOG: &str = "Connection settings can live in a config file \
-(~/.config/quasseltui/config.ini, XDG-aware) with named [server:NAME] sections. \
+(~/.config/quasseltui/config.toml, XDG-aware) with named [server.NAME] tables. \
 With a config in place, `quasseltui SERVER` is shorthand for \
 `quasseltui ui --server SERVER`, and bare `quasseltui` connects to the default \
 server. Note: put options AFTER the subcommand (`quasseltui ui --server home`, \
@@ -63,7 +63,7 @@ pub enum Mode {
 
 #[derive(Debug, Clone, Default, Args)]
 pub struct ConnectArgs {
-    /// Use connection settings from [server:NAME] in the config file.
+    /// Use connection settings from [server.NAME] in the config file.
     /// Defaults to the config's default_server when omitted. Any explicit
     /// flag below overrides the corresponding config value.
     #[arg(long)]
@@ -93,7 +93,7 @@ pub struct ConnectArgs {
 
 #[derive(Clone, Default, Args)]
 pub struct CredentialArgs {
-    /// Username (env: QUASSEL_USER; config: [server:*] user; prompted if unset)
+    /// Username (env: QUASSEL_USER; config: [server.*] user; prompted if unset)
     #[arg(long)]
     pub user: Option<String>,
     /// Password — discouraged on the command line because it shows up in
@@ -198,7 +198,7 @@ pub fn normalize_argv(
 }
 
 /// Merge CLI flags with the config. Precedence: explicit flag, then the
-/// `[server:NAME]` value, then the built-in default. `NAME` is `--server`
+/// `[server.NAME]` value, then the built-in default. `NAME` is `--server`
 /// or the config's `default_server`. The config isn't read at all when the
 /// CLI already names a host and port and no `--server` was given.
 pub fn resolve_connection(
@@ -224,7 +224,7 @@ pub fn resolve_connection(
                 let server = cfg.resolve_server(name.as_deref());
                 if let (Some(name), None) = (name, server) {
                     return Err(format!(
-                        "no [server:{name}] section in {}",
+                        "no [server.{name}] table in {}",
                         cfg.path.display()
                     ));
                 }

@@ -16,7 +16,7 @@ fn args(server: Option<&str>, host: Option<&str>, port: Option<u16>) -> ConnectA
 
 fn config_with(servers: Vec<ServerConfig>, default: Option<&str>) -> Config {
     Config {
-        path: PathBuf::from("/tmp/config.ini"),
+        path: PathBuf::from("/tmp/config.toml"),
         default_server: default.map(String::from),
         hide_joins_parts: false,
         hide_nick_changes: false,
@@ -146,7 +146,7 @@ fn resolve_errors() {
 fn cli_parses_and_help_mentions_config() {
     Cli::command().debug_assert();
     let help = Cli::command().render_long_help().to_string();
-    assert!(help.contains("config.ini"));
+    assert!(help.contains("config.toml"));
     assert!(help.contains("quasseltui SERVER"));
 
     let parsed = Cli::try_parse_from(["quasseltui", "ui", "--host", "h", "--port", "1"]).unwrap();

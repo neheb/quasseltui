@@ -35,46 +35,48 @@ mise use -g github:neheb/quasseltui
 
 Instead of using command-line arguments (`quasseltui --help` for more information), you can use a config file.
 
-Connection settings can be loaded from `~/.config/quasseltui/config.ini`
-(or `$XDG_CONFIG_HOME/quasseltui/config.ini`) so that `--host`, `--port`,
+Connection settings can be loaded from `~/.config/quasseltui/config.toml`
+(or `$XDG_CONFIG_HOME/quasseltui/config.toml`) so that `--host`, `--port`,
 `--user`, etc. don't have to be repeated on every invocation.
 
 Example:
 
-```ini
-[quasseltui]
-default_server = home
-# hide_joins_parts = false  (true hides joins, parts, quits and netsplits)
-# hide_nick_changes = false  (true hides nick changes)
-# notify = true  (false: no bell or desktop notification on highlights)
+```toml
+default_server = "home"
+# hide_joins_parts = false   # true hides joins, parts, quits and netsplits
+# hide_nick_changes = false  # true hides nick changes
+# notify = true              # false: no bell or desktop notification on highlights
 
-[server:home]
-host = irc.example.com
+[server.home]
+host = "irc.example.com"
 port = 4242
-user = linsomniac
-password = hunter2
-# tls = true              (default; set to false for plain TCP)
-# insecure = false        (skip cert verification; self-signed cores)
-# cafile = /path/to/ca.pem
+user = "linsomniac"
+password = "hunter2"
+# tls = true                 # default; set to false for plain TCP
+# insecure = false           # skip cert verification; self-signed cores
+# cafile = "/path/to/ca.pem"
 # connect_timeout = 10
 
-[server:work]
-host = irc.work.example
+[server.work]
+host = "irc.work.example"
 port = 4242
-user = linsomniac
+user = "linsomniac"
 ```
+
+The global settings must come before the first `[server.NAME]` table;
+in TOML, anything after a table header belongs to that table.
 
 Because the file stores the password, make sure it's readable only by
 you:
 
 ```sh
-chmod 600 ~/.config/quasseltui/config.ini
+chmod 600 ~/.config/quasseltui/config.toml
 ```
 
 With a config in place, three shortcuts become available:
 
 - `quasseltui` — connects to `default_server`.
-- `quasseltui <NAME>` — connects to `[server:<NAME>]`.
+- `quasseltui <NAME>` — connects to `[server.<NAME>]`.
 - `quasseltui ui --server <NAME>` — same as above, explicit form.
 
 Any command-line flag still overrides the corresponding config value.

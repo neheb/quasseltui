@@ -1,59 +1,40 @@
 //! The user config file.
 //!
-//! Location: `$XDG_CONFIG_HOME/quasseltui/config.ini`, or
-//! `~/.config/quasseltui/config.ini`.
+//! Location: `$XDG_CONFIG_HOME/quasseltui/config.toml`, or
+//! `~/.config/quasseltui/config.toml`.
 //!
-//! ```ini
-//! [quasseltui]
-//! default_server = home
+//! ```toml
+//! default_server = "home"
+//! # hide_joins_parts = false
+//! # hide_nick_changes = false
+//! # notify = true
 //!
-//! [server:home]
-//! host = irc.example.com
+//! [server.home]
+//! host = "irc.example.com"
 //! port = 4242
-//! user = sean
-//! password = hunter2
+//! user = "sean"
+//! password = "hunter2"
 //! # tls = true            (default)
 //! # insecure = false      (skip TLS cert verification; self-signed cores)
-//! # cafile = /etc/ssl/certs/quassel.pem
+//! # cafile = "/etc/ssl/certs/quassel.pem"
 //! # connect_timeout = 10
 //! ```
 //!
 //! Every setting is optional and falls back to the CLI flag (and then, for
 //! the user and password, to `QUASSEL_USER`/`QUASSEL_PASSWORD` or a
-//! prompt). Unknown sections and keys are errors so typos surface. Values
-//! are literal: `%` has no special meaning. The format follows Python's
-//! `configparser` (the original implementation), so existing files keep
-//! working: `=` or `:` delimiters, `#`/`;` comment lines, case-insensitive
-//! keys, indented continuation lines, and a `[DEFAULT]` section.
+//! prompt). Unknown keys are errors so typos surface.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const MAIN_SECTION: &str = "quasseltui";
-const SERVER_PREFIX: &str = "server:";
-const ALLOWED_MAIN_KEYS: [&str; 4] = [
-    "default_server",
-    "hide_joins_parts",
-    "hide_nick_changes",
-    "notify",
-];
-const ALLOWED_SERVER_KEYS: [&str; 8] = [
-    "cafile",
-    "connect_timeout",
-    "host",
-    "insecure",
-    "password",
-    "port",
-    "tls",
-    "user",
-];
+use serde::Deserialize;
 
 /// The file exists but can't be read, parsed, or validated.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ConfigError(pub String);
 
-/// One `[server:NAME]` section. `None` means "not set here".
+/// One `[server.NAME]` table. `None` means "not set here".
 #[derive(Clone, PartialEq, Default)]
 pub struct ServerConfig {
     pub name: String,
@@ -120,7 +101,7 @@ fn config_path_from(xdg: Option<std::ffi::OsString>, home: Option<std::ffi::OsSt
             .map_or_else(|| PathBuf::from("."), PathBuf::from)
             .join(".config"),
     };
-    base.join("quasseltui").join("config.ini")
+    base.join("quasseltui").join("config.toml")
 }
 
 impl Config {
@@ -141,6 +122,39 @@ impl Config {
     }
 }
 
+/// The file as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConfig {
+    default_server: Option<String>,
+    hide_joins_parts: Option<bool>,
+    hide_nick_changes: Option<bool>,
+    notify: Option<bool>,
+    #[serde(default)]
+    server: BTreeMap<String, RawServer>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServer {
+    host: Option<String>,
+    port: Option<i64>,
+    user: Option<String>,
+    password: Option<String>,
+    tls: Option<bool>,
+    insecure: Option<bool>,
+    cafile: Option<String>,
+    connect_timeout: Option<Seconds>,
+}
+
+/// TOML keeps integers and floats apart; a timeout may be either.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Seconds {
+    Int(i64),
+    Float(f64),
+}
+
 /// Load the config at `path` (or the default path). `Ok(None)` when the
 /// file doesn't exist: that's the first-run case, not an error.
 pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
@@ -150,238 +164,104 @@ pub fn load(path: Option<&Path>) -> Result<Option<Config>, ConfigError> {
     // permission problem) is an error, not a silent fallback.
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // The config used to be INI: don't silently ignore an old one.
+            let old = path.with_extension("ini");
+            if old.exists() {
+                return Err(ConfigError(format!(
+                    "{} is no longer read; convert it to TOML at {shown} \
+                     ([server:NAME] becomes [server.NAME], strings are quoted)",
+                    old.display()
+                )));
+            }
+            return Ok(None);
+        }
         Err(e) => return Err(ConfigError(format!("{shown}: {e}"))),
     };
-    let sections = parse_ini(&text).map_err(|e| ConfigError(format!("{shown}: {e}")))?;
+    let raw: RawConfig = toml::from_str(&text).map_err(|e| ConfigError(format!("{shown}: {e}")))?;
 
-    let defaults = sections.get("DEFAULT").cloned().unwrap_or_default();
-    // [DEFAULT] feeds the server sections, so it takes their keys. Check it
-    // here too: with no server sections a typo would otherwise pass.
-    for key in defaults.keys() {
-        if !ALLOWED_SERVER_KEYS.contains(&key.as_str()) {
-            return Err(ConfigError(format!(
-                "{shown}: [DEFAULT] unknown setting '{key}' (allowed: {})",
-                ALLOWED_SERVER_KEYS.join(", ")
-            )));
-        }
-    }
-    let with_defaults = |values: &BTreeMap<String, String>| {
-        let mut merged = defaults.clone();
-        merged.extend(values.iter().map(|(k, v)| (k.clone(), v.clone())));
-        merged
-    };
-
-    let mut default_server = None;
-    let mut hide_joins_parts = false;
-    let mut hide_nick_changes = false;
-    let mut notify = true;
     let mut servers = BTreeMap::new();
-    for (section, values) in &sections {
-        if section == "DEFAULT" {
-            continue;
-        }
-        if section == MAIN_SECTION {
-            // Only the section's own keys: [DEFAULT] feeds the server
-            // sections, and isn't merged in here.
-            for key in values.keys() {
-                if !ALLOWED_MAIN_KEYS.contains(&key.as_str()) {
-                    return Err(ConfigError(format!(
-                        "{shown}: [{MAIN_SECTION}] unknown setting '{key}' (allowed: {})",
-                        ALLOWED_MAIN_KEYS.join(", ")
-                    )));
-                }
-            }
-            let merged = values;
-            let value = merged
-                .get("default_server")
-                .map(|v| v.trim().to_string())
-                .unwrap_or_default();
-            if !value.is_empty() {
-                default_server = Some(value);
-            }
-            let flag = |key: &str, default: bool| -> Result<bool, ConfigError> {
-                merged.get(key).map_or(Ok(default), |raw| {
-                    parse_bool(raw)
-                        .map(|v| v.unwrap_or(default))
-                        .map_err(|e| ConfigError(format!("{shown}: [{MAIN_SECTION}] {key}: {e}")))
-                })
-            };
-            hide_joins_parts = flag("hide_joins_parts", false)?;
-            hide_nick_changes = flag("hide_nick_changes", false)?;
-            notify = flag("notify", true)?;
-            continue;
-        }
-        let Some(rest) = section.strip_prefix(SERVER_PREFIX) else {
-            return Err(ConfigError(format!(
-                "{shown}: unknown section [{section}] (expected [quasseltui] or [server:NAME])"
-            )));
-        };
-        let name = rest.trim();
+    for (name, server) in raw.server {
+        let name = name.trim().to_string();
         if name.is_empty() {
-            return Err(ConfigError(format!(
-                "{shown}: empty server name in section [{section}]"
-            )));
+            return Err(ConfigError(format!("{shown}: empty server name")));
         }
-        let server = parse_server(&path, name, &with_defaults(values))?;
-        servers.insert(name.to_string(), server);
+        let server = parse_server(&path, &name, server)?;
+        servers.insert(name, server);
     }
-
+    let default_server = raw
+        .default_server
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
     if let Some(default) = &default_server
         && !servers.contains_key(default)
     {
         return Err(ConfigError(format!(
-            "{shown}: default_server = '{default}' has no matching [server:{default}] section"
+            "{shown}: default_server = '{default}' has no matching [server.{default}] table"
         )));
     }
     Ok(Some(Config {
         path,
         default_server,
-        hide_joins_parts,
-        hide_nick_changes,
-        notify,
+        hide_joins_parts: raw.hide_joins_parts.unwrap_or(false),
+        hide_nick_changes: raw.hide_nick_changes.unwrap_or(false),
+        notify: raw.notify.unwrap_or(true),
         servers,
     }))
 }
 
-fn parse_server(
-    path: &Path,
-    name: &str,
-    values: &BTreeMap<String, String>,
-) -> Result<ServerConfig, ConfigError> {
+fn parse_server(path: &Path, name: &str, raw: RawServer) -> Result<ServerConfig, ConfigError> {
     let shown = path.display();
-    for key in values.keys() {
-        if !ALLOWED_SERVER_KEYS.contains(&key.as_str()) {
-            return Err(ConfigError(format!(
-                "{shown}: [server:{name}] unknown setting '{key}' (allowed: {})",
-                ALLOWED_SERVER_KEYS.join(", ")
-            )));
-        }
-    }
     let field_error =
-        |key: &str, msg: String| ConfigError(format!("{shown}: [server:{name}] {key}: {msg}"));
-    let text = |key: &str| {
-        values
-            .get(key)
+        |key: &str, msg: String| ConfigError(format!("{shown}: [server.{name}] {key}: {msg}"));
+    // Empty means "not set", so the CLI flag or prompt still applies.
+    let text = |value: Option<String>| {
+        value
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
     };
-    let boolean = |key: &str| -> Result<Option<bool>, ConfigError> {
-        values
-            .get(key)
-            .map_or(Ok(None), |raw| parse_bool(raw))
-            .map_err(|e| field_error(key, e))
-    };
-    let port = match text("port") {
-        None => None,
-        Some(raw) => {
-            let value: i64 = raw.parse().map_err(|_| {
-                field_error(
-                    "port",
-                    format!("invalid literal for int() with base 10: '{raw}'"),
-                )
-            })?;
-            Some(
-                u16::try_from(value)
-                    .ok()
-                    .filter(|port| *port != 0)
-                    .ok_or_else(|| {
-                        field_error("port", format!("{value} is out of range (1-65535)"))
-                    })?,
-            )
-        }
-    };
-    let connect_timeout = match text("connect_timeout") {
-        None => None,
-        Some(raw) => Some(parse_seconds(&raw).map_err(|e| field_error("connect_timeout", e))?),
-    };
-    // Passwords aren't trimmed beyond what the INI format already does
-    // (INI can't represent surrounding spaces anyway). Empty means "not
-    // set", so the interactive prompt still fires.
-    let password = values.get("password").filter(|v| !v.is_empty()).cloned();
+    let port = raw
+        .port
+        .map(|value| {
+            u16::try_from(value)
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or_else(|| field_error("port", format!("{value} is out of range (1-65535)")))
+        })
+        .transpose()?;
+    let connect_timeout = raw
+        .connect_timeout
+        .map(|value| {
+            // Integers this large lose precision as f64; the range check
+            // rejects them all the same.
+            #[allow(clippy::cast_precision_loss)]
+            let secs = match value {
+                Seconds::Int(v) => v as f64,
+                Seconds::Float(v) => v,
+            };
+            check_seconds(secs).map_err(|e| field_error("connect_timeout", e))
+        })
+        .transpose()?;
     Ok(ServerConfig {
         name: name.to_string(),
-        host: text("host"),
+        host: text(raw.host),
         port,
-        user: text("user"),
-        password,
-        tls: boolean("tls")?,
-        insecure: boolean("insecure")?,
-        cafile: text("cafile"),
+        user: text(raw.user),
+        // Not trimmed: spaces may be part of the password.
+        password: raw.password.filter(|v| !v.is_empty()),
+        tls: raw.tls,
+        insecure: raw.insecure,
+        cafile: text(raw.cafile),
         connect_timeout,
     })
 }
 
-/// configparser's booleans; an empty value means "not set".
-fn parse_bool(raw: &str) -> Result<Option<bool>, String> {
-    let raw = raw.trim();
-    match raw.to_lowercase().as_str() {
-        "" => Ok(None),
-        "1" | "yes" | "true" | "on" => Ok(Some(true)),
-        "0" | "no" | "false" | "off" => Ok(Some(false)),
-        _ => Err(format!("Not a boolean: {raw}")),
+fn check_seconds(v: f64) -> Result<f64, String> {
+    if v >= 0.0 && std::time::Duration::try_from_secs_f64(v).is_ok() {
+        Ok(v)
+    } else {
+        Err(format!("{v} is not a usable timeout in seconds"))
     }
-}
-
-/// Parse INI text into section -> key -> value, configparser-style.
-fn parse_ini(text: &str) -> Result<BTreeMap<String, BTreeMap<String, String>>, String> {
-    let mut sections: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
-    let mut current: Option<String> = None;
-    let mut last_key: Option<String> = None;
-    for (index, raw_line) in text.lines().enumerate() {
-        let lineno = index + 1;
-        let trimmed = raw_line.trim();
-        if trimmed.starts_with('#') || trimmed.starts_with(';') {
-            continue;
-        }
-        if trimmed.is_empty() {
-            last_key = None;
-            continue;
-        }
-        let indented = raw_line.starts_with([' ', '\t']);
-        if indented && let (Some(section), Some(key)) = (&current, &last_key) {
-            let value = sections
-                .get_mut(section)
-                .and_then(|s| s.get_mut(key))
-                .expect("continuation of an existing key");
-            value.push('\n');
-            value.push_str(trimmed);
-            continue;
-        }
-        if let Some(inner) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            let name = inner.to_string();
-            if sections.contains_key(&name) {
-                return Err(format!(
-                    "While reading from config [line {lineno:2}]: section '{name}' already exists"
-                ));
-            }
-            sections.insert(name.clone(), BTreeMap::new());
-            current = Some(name);
-            last_key = None;
-            continue;
-        }
-        let Some(section) = &current else {
-            return Err(format!(
-                "File contains no section headers.\nfile: config, line: {lineno}\n{raw_line:?}"
-            ));
-        };
-        let Some(split) = trimmed.find(['=', ':']) else {
-            return Err(format!(
-                "Source contains parsing errors: [line {lineno:2}]: {raw_line:?}"
-            ));
-        };
-        let key = trimmed[..split].trim().to_lowercase();
-        let value = trimmed[split + 1..].trim().to_string();
-        let entries = sections.get_mut(section).expect("current section exists");
-        if entries.contains_key(&key) {
-            return Err(format!(
-                "While reading from config [line {lineno:2}]: option '{key}' in section '{section}' already exists"
-            ));
-        }
-        entries.insert(key.clone(), value);
-        last_key = Some(key);
-    }
-    Ok(sections)
 }
 
 /// A number of seconds that fits a `Duration`: finite, not negative, and
@@ -399,7 +279,7 @@ mod tests {
     use super::*;
 
     fn write(dir: &tempfile::TempDir, body: &str) -> PathBuf {
-        let path = dir.path().join("config.ini");
+        let path = dir.path().join("config.toml");
         std::fs::write(&path, body).unwrap();
         path
     }
@@ -416,7 +296,7 @@ mod tests {
 
     #[test]
     fn debug_output_redacts_the_password() {
-        let cfg = load_ok("[server:home]\nhost = x\npassword = hunter2\n");
+        let cfg = load_ok("[server.home]\nhost = \"x\"\npassword = \"hunter2\"\n");
         let shown = format!("{cfg:?}");
         assert!(
             !shown.contains("hunter2") && shown.contains("<redacted>"),
@@ -428,7 +308,10 @@ mod tests {
     fn readable_password_files_warn() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let path = write(&dir, "[server:home]\nhost = x\npassword = hunter2\n");
+        let path = write(
+            &dir,
+            "[server.home]\nhost = \"x\"\npassword = \"hunter2\"\n",
+        );
         let chmod = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
         chmod(0o644).unwrap();
         let cfg = load(Some(&path)).unwrap().unwrap();
@@ -440,7 +323,7 @@ mod tests {
         chmod(0o600).unwrap();
         assert!(cfg.permission_warning().is_none());
         // No password, nothing to protect.
-        let cfg = load_ok("[server:home]\nhost = x\n");
+        let cfg = load_ok("[server.home]\nhost = \"x\"\n");
         assert!(cfg.permission_warning().is_none());
     }
 
@@ -448,7 +331,7 @@ mod tests {
     fn unreadable_config_is_an_error_not_missing() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let path = write(&dir, "[server:home]\nhost = x\n");
+        let path = write(&dir, "[server.home]\nhost = \"x\"\n");
         // No search permission on the directory: the file can't even be
         // stat'ed, which `Path::exists` reported as "no config".
         let locked = std::fs::Permissions::from_mode(0o000);
@@ -467,18 +350,22 @@ mod tests {
     fn missing_file_is_none() {
         let dir = tempfile::tempdir().unwrap();
         assert!(
-            load(Some(&dir.path().join("config.ini")))
+            load(Some(&dir.path().join("config.toml")))
                 .unwrap()
                 .is_none()
         );
+        // A leftover INI file is pointed out rather than ignored.
+        std::fs::write(dir.path().join("config.ini"), "[server:home]\n").unwrap();
+        let err = load(Some(&dir.path().join("config.toml"))).unwrap_err();
+        assert!(err.0.contains("config.ini is no longer read"), "{err}");
     }
 
     #[test]
     fn full_server() {
         let cfg = load_ok(
-            "[quasseltui]\ndefault_server = home\n\n[server:home]\nhost = irc.example.com\n\
-             port = 4242\nuser = sean\npassword = hunter2\ntls = true\ninsecure = false\n\
-             cafile = /etc/ssl/certs/quassel.pem\nconnect_timeout = 15\n",
+            "default_server = \"home\"\n\n[server.home]\nhost = \"irc.example.com\"\n\
+             port = 4242\nuser = \"sean\"\npassword = \"hunter2\"\ntls = true\ninsecure = false\n\
+             cafile = \"/etc/ssl/certs/quassel.pem\"\nconnect_timeout = 15\n",
         );
         assert_eq!(cfg.default_server.as_deref(), Some("home"));
         let home = &cfg.servers["home"];
@@ -490,125 +377,107 @@ mod tests {
         assert_eq!(home.insecure, Some(false));
         assert_eq!(home.cafile.as_deref(), Some("/etc/ssl/certs/quassel.pem"));
         assert_eq!(home.connect_timeout, Some(15.0));
+        let cfg = load_ok("[server.home]\nconnect_timeout = 2.5\n");
+        assert_eq!(cfg.servers["home"].connect_timeout, Some(2.5));
     }
 
     #[test]
     fn multiple_servers_and_resolution() {
         let cfg = load_ok(
-            "[quasseltui]\ndefault_server = work\n[server:home]\nhost = a\nport = 4242\n\
-             [server:work]\nhost = b\nport = 4242\nuser = alice\n",
+            "default_server = \"work\"\n[server.home]\nhost = \"a\"\nport = 4242\n\
+             [server.work]\nhost = \"b\"\nport = 4242\nuser = \"alice\"\n",
         );
         assert_eq!(cfg.servers.len(), 2);
         assert_eq!(cfg.resolve_server(None).unwrap().name, "work");
         assert_eq!(cfg.resolve_server(Some("home")).unwrap().name, "home");
         assert!(cfg.resolve_server(Some("nope")).is_none());
+        // Quoted names may hold dots.
+        let cfg = load_ok("[server.\"irc.example\"]\nhost = \"a\"\n");
+        assert!(cfg.servers.contains_key("irc.example"));
     }
 
     #[test]
-    fn main_section_is_optional() {
-        let cfg = load_ok("[server:home]\nhost = irc.example.com\nport = 4242\n");
+    fn global_settings_are_optional() {
+        let cfg = load_ok("[server.home]\nhost = \"irc.example.com\"\nport = 4242\n");
         assert!(cfg.default_server.is_none());
+        assert!(!cfg.hide_joins_parts && !cfg.hide_nick_changes && cfg.notify);
         assert!(cfg.resolve_server(None).is_none());
         assert!(cfg.resolve_server(Some("home")).is_some());
+        assert!(load_ok("").servers.is_empty());
+    }
+
+    #[test]
+    fn display_options() {
+        let cfg = load_ok("hide_joins_parts = true\nhide_nick_changes = true\nnotify = false\n");
+        assert!(cfg.hide_joins_parts && cfg.hide_nick_changes && !cfg.notify);
     }
 
     #[test]
     fn validation_errors() {
-        assert!(load_err("[servers:home]\nhost = x\n").contains("unknown section"));
-        assert!(load_err("[server:]\nhost = x\n").contains("empty server name"));
-        assert!(load_err("[server:home]\nhost = x\npasswrod = oops\n").contains("unknown setting"));
-        assert!(load_err("[DEFAULT]\nprot = 1\n").contains("[DEFAULT] unknown setting 'prot'"));
-        assert!(load_err("[server:home]\nport = notanumber\n").contains("port"));
-        assert!(load_err("[server:home]\nport = 70000\n").contains("port"));
-        assert!(load_err("[server:home]\nport = 0\n").contains("1-65535"));
-        assert!(load_err("[server:home]\ntls = maybe\n").contains("tls"));
-        assert!(load_err("[server:home]\nconnect_timeout = soon\n").contains("connect_timeout"));
-        for bad in ["-1", "inf", "NaN", "1e30"] {
-            assert!(
-                load_err(&format!("[server:home]\nconnect_timeout = {bad}\n"))
-                    .contains("connect_timeout"),
-                "{bad}"
+        let has = |body: &str, needle: &str| {
+            let err = load_err(body);
+            assert!(err.contains(needle), "{body:?}: {err}");
+        };
+        has("[servers.home]\nhost = \"x\"\n", "unknown field `servers`");
+        has("[server.\"\"]\nhost = \"x\"\n", "empty server name");
+        has(
+            "[server.home]\npasswrod = \"oops\"\n",
+            "unknown field `passwrod`",
+        );
+        has(
+            "hide_join_parts = true\n",
+            "unknown field `hide_join_parts`",
+        );
+        // A global setting written under a server table lands in it.
+        has("[server.home]\nnotify = false\n", "unknown field `notify`");
+        has("[server.home]\nport = \"4242\"\n", "port");
+        has("[server.home]\nport = 70000\n", "1-65535");
+        has("[server.home]\nport = 0\n", "1-65535");
+        has("[server.home]\ntls = \"yes\"\n", "tls");
+        has("hide_joins_parts = \"maybe\"\n", "hide_joins_parts");
+        has(
+            "[server.home]\nconnect_timeout = \"soon\"\n",
+            "connect_timeout",
+        );
+        for bad in ["-1", "inf", "nan", "1e30"] {
+            has(
+                &format!("[server.home]\nconnect_timeout = {bad}\n"),
+                "connect_timeout",
             );
         }
-        assert!(
-            load_err("[quasseltui]\ndefault_server = ghost\n[server:home]\nhost = x\n")
-                .contains("default_server")
+        has(
+            "default_server = \"ghost\"\n[server.home]\nhost = \"x\"\n",
+            "default_server",
         );
-        assert!(load_err("host = x\n").contains("no section headers"));
-        assert!(load_err("[server:a]\nhost\n").contains("parsing errors"));
-        assert!(load_err("[server:a]\n[server:a]\n").contains("already exists"));
-        assert!(load_err("[server:a]\nhost = x\nhost = y\n").contains("already exists"));
+        has("[server.a]\nhost = \"x\"\nhost = \"y\"\n", "duplicate key");
+        has("host = x\n", "config.toml");
     }
 
     #[test]
-    fn hide_joins_parts_option() {
-        assert!(!load_ok("[server:home]\nhost = x\n").hide_joins_parts);
-        assert!(load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_joins_parts);
-        assert!(!load_ok("[quasseltui]\nhide_joins_parts = off\n").hide_joins_parts);
-        assert!(load_err("[quasseltui]\nhide_joins_parts = maybe\n").contains("hide_joins_parts"));
-    }
-
-    #[test]
-    fn notify_option_defaults_on() {
-        assert!(load_ok("[server:home]\nhost = x\n").notify);
-        assert!(load_ok("[quasseltui]\nnotify =\n").notify);
-        assert!(!load_ok("[quasseltui]\nnotify = off\n").notify);
-        assert!(load_err("[quasseltui]\nnotify = loud\n").contains("notify"));
-    }
-
-    #[test]
-    fn hide_nick_changes_option() {
-        assert!(!load_ok("[quasseltui]\nhide_joins_parts = yes\n").hide_nick_changes);
-        assert!(load_ok("[quasseltui]\nhide_nick_changes = true\n").hide_nick_changes);
-        assert!(
-            load_err("[quasseltui]\nhide_nick_changes = maybe\n").contains("hide_nick_changes")
-        );
-        assert!(load_err("[quasseltui]\nhide_join_parts = true\n").contains("unknown setting"));
-        // [DEFAULT] keys meant for servers don't trip the main-section check.
-        assert!(
-            load_ok("[DEFAULT]\nport = 4242\n[quasseltui]\n[server:a]\n").servers["a"].port
-                == Some(4242)
-        );
-    }
-
-    #[test]
-    fn empty_password_is_unset_and_percent_is_literal() {
-        let cfg = load_ok("[server:home]\nhost = x\npassword =\n");
+    fn empty_strings_are_unset() {
+        let cfg = load_ok("[server.home]\nhost = \" \"\npassword = \"\"\n");
+        assert!(cfg.servers["home"].host.is_none());
         assert!(cfg.servers["home"].password.is_none());
-        let cfg = load_ok("[server:home]\npassword = sup%r,s3cret%\n");
+        let cfg = load_ok("[server.home]\npassword = \" sup%r s3cret \"\n");
         assert_eq!(
             cfg.servers["home"].password.as_deref(),
-            Some("sup%r,s3cret%")
+            Some(" sup%r s3cret ")
         );
-    }
-
-    #[test]
-    fn configparser_syntax() {
-        let cfg = load_ok(
-            "# comment\n; another\n[DEFAULT]\nport = 4242\n\n[server:home]\nHOST: irc.example.com\n\
-             TLS = Off\n  # indented comment\n",
-        );
-        let home = &cfg.servers["home"];
-        assert_eq!(home.host.as_deref(), Some("irc.example.com"));
-        assert_eq!(home.tls, Some(false));
-        assert_eq!(home.port, Some(4242));
-        let cfg = load_ok("[server:home]\npassword = a=b:c\n");
-        assert_eq!(cfg.servers["home"].password.as_deref(), Some("a=b:c"));
     }
 
     #[test]
     fn default_path_honors_xdg() {
         assert_eq!(
             config_path_from(Some("/x/cfg".into()), Some("/home/u".into())),
-            PathBuf::from("/x/cfg/quasseltui/config.ini")
+            PathBuf::from("/x/cfg/quasseltui/config.toml")
         );
         assert_eq!(
             config_path_from(None, Some("/home/u".into())),
-            PathBuf::from("/home/u/.config/quasseltui/config.ini")
+            PathBuf::from("/home/u/.config/quasseltui/config.toml")
         );
         assert_eq!(
             config_path_from(Some("".into()), Some("/home/u".into())),
-            PathBuf::from("/home/u/.config/quasseltui/config.ini")
+            PathBuf::from("/home/u/.config/quasseltui/config.toml")
         );
     }
 }

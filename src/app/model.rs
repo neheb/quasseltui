@@ -551,6 +551,9 @@ impl App {
                 if Some(*buffer_id) == self.active_buffer_id && *count > 0 {
                     effects.extend(self.active_updated(Some(*buffer_id)));
                 }
+                if effects.is_empty() {
+                    effects = self.fill_short_view(*buffer_id, *received);
+                }
                 effects
             }
             ClientEvent::Disconnected { reason, error } => {
@@ -1091,6 +1094,22 @@ impl App {
             before: oldest,
             limit,
         }]
+    }
+
+    /// A full page landed in the active buffer but leaves the view short,
+    /// as when it was all joins and quits that are hidden: fetch older
+    /// history now rather than waiting for a scroll that can't move.
+    /// A short page means the core has no more, so it stops there.
+    fn fill_short_view(&mut self, buffer: BufferId, received: usize) -> Vec<Effect> {
+        let full_page = i32::try_from(received).map_or(true, |r| r >= DEFAULT_BACKLOG_LIMIT);
+        if !full_page || Some(buffer) != self.active_buffer_id || self.log.buffer != Some(buffer) {
+            return Vec::new();
+        }
+        let height = usize::from(self.log.height);
+        if self.log.layout(&self.state).total_lines() >= height {
+            return Vec::new();
+        }
+        self.fetch_older_if_at_top()
     }
 
     /// A gap fill is under way. Its next page is only asked for once the

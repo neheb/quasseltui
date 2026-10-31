@@ -1442,3 +1442,40 @@ fn unanswered_history_requests_expire() {
     assert!(app.notices.last().unwrap().contains("history request"));
     assert_eq!(app.on_key(key(KeyCode::Char('g'))), [older(10, 5)]);
 }
+
+/// Merge a backlog page of joins and tell the app.
+fn join_reply(app: &mut App, buffer: i32, ids: std::ops::RangeInclusive<i64>) -> Vec<Effect> {
+    let received = ids.clone().count();
+    let oldest = Some(MsgId(*ids.start()));
+    let list = app.state.messages.entry(BufferId(buffer)).or_default();
+    list.extend(ids.map(|id| join(id, buffer)));
+    list.sort_by_key(|m| m.msg_id);
+    app.on_client_event(&ClientEvent::BacklogReceived {
+        buffer_id: BufferId(buffer),
+        count: received,
+        received,
+        oldest,
+    })
+}
+
+#[test]
+fn a_page_of_hidden_messages_fetches_older_history_right_away() {
+    let mut app = live_app();
+    app.set_display(DisplaySettings {
+        hide_joins_parts: true,
+        ..DisplaySettings::default()
+    });
+    app.on_client_event(&opened());
+    // The initial page is all joins: nothing shows, so ask for older
+    // history without waiting for a scroll.
+    assert_eq!(join_reply(&mut app, 10, 201..=300), [older(10, 201)]);
+    // Still nothing to show: keep going.
+    assert_eq!(join_reply(&mut app, 10, 101..=200), [older(10, 101)]);
+    // A short page is the start of history: stop.
+    assert!(join_reply(&mut app, 10, 51..=100).is_empty());
+
+    // With joins shown, the same page fills the view and nothing is fetched.
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    assert!(join_reply(&mut app, 10, 201..=300).is_empty());
+}

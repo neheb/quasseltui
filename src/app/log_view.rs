@@ -554,6 +554,20 @@ impl LogView {
         }
     }
 
+    /// The newest message with a line on screen.
+    pub fn last_visible_message(&mut self, state: &ClientState) -> Option<MsgId> {
+        let height = usize::from(self.height);
+        let top = self.top_line(state);
+        let layout = self.layout(state);
+        layout
+            .lines
+            .iter()
+            .skip(top)
+            .take(height)
+            .rev()
+            .find_map(|(row, _)| layout.rows[*row].msg_id())
+    }
+
     /// The visible lines, top to bottom, with their row keys.
     pub fn visible(&mut self, state: &ClientState) -> Vec<(RowKey, Vec<Segment>)> {
         let height = usize::from(self.height);

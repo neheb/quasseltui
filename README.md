@@ -134,7 +134,9 @@ to 5000 messages in memory; past that, the border says `history limit
 reached`.
 
 Buffers with unseen activity are bold in the sidebar; highlights and
-private messages are bold yellow. Read state and markers sync through
+private messages are bold yellow. Switching away from a buffer moves its
+read marker down to the newest message that was on screen. Read state and
+markers sync through
 the core, so reading here marks things read in your other Quassel
 clients (and vice versa on the next run).
 

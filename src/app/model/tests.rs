@@ -588,12 +588,13 @@ fn switching_buffers_reports_last_seen() {
     assert_eq!(
         effects,
         [
+            Effect::SetMarkerLine(BufferId(10), MsgId(9)),
             Effect::RequestBacklog(BufferId(11)),
             Effect::SetLastSeen(BufferId(10), MsgId(9))
         ]
     );
-    // The backlog latch makes a revisit request nothing new; leaving a
-    // buffer still reports it read.
+    // The backlog latch makes a revisit request nothing new, and a marker
+    // already in place stays; leaving a buffer still reports it read.
     assert!(app.on_key(alt(KeyCode::Up)).is_empty());
     assert_eq!(
         app.on_key(alt(KeyCode::Down)),
@@ -1478,4 +1479,32 @@ fn a_page_of_hidden_messages_fetches_older_history_right_away() {
     let mut app = live_app();
     app.on_client_event(&opened());
     assert!(join_reply(&mut app, 10, 201..=300).is_empty());
+}
+
+#[test]
+fn leaving_a_buffer_moves_its_marker_to_what_was_on_screen() {
+    let mut app = live_app();
+    app.on_client_event(&opened());
+    backlog_reply(&mut app, 10, 1..=50);
+    app.log.set_viewport(80, 5);
+    app.set_focus(Focus::Log);
+    // Scrolled up: the marker goes to the newest message on screen, not
+    // the newest in the buffer.
+    app.scroll_log(-20);
+    let seen = app.log.last_visible_message(&app.state).expect("on screen");
+    assert!(seen < MsgId(50));
+    app.select_buffer(BufferId(11));
+    assert_eq!(app.state.read_markers[&BufferId(10)], seen);
+
+    // A marker further down than what was seen stays put.
+    app.select_buffer(BufferId(10));
+    app.state.read_markers.insert(BufferId(10), MsgId(50));
+    app.scroll_log(-20);
+    let effects = app.select_buffer(BufferId(11));
+    assert!(
+        !effects
+            .iter()
+            .any(|e| matches!(e, Effect::SetMarkerLine(..)))
+    );
+    assert_eq!(app.state.read_markers[&BufferId(10)], MsgId(50));
 }

@@ -722,8 +722,18 @@ impl App {
             return Vec::new();
         }
         self.completion = None;
+        // Like Quassel's own client: leaving a buffer moves its marker up
+        // to the newest message that was on screen, never back.
+        let mut effects = Vec::new();
+        if let Some(prev) = self.active_buffer_id
+            && self.log.buffer == Some(prev)
+            && let Some(seen) = self.log.last_visible_message(&self.state)
+            && self.state.read_markers.get(&prev).is_none_or(|m| *m < seen)
+        {
+            effects.extend(self.place_marker(prev, seen));
+        }
         let previous = self.active_buffer_id.replace(buffer);
-        let mut effects = self.active_updated(Some(buffer));
+        effects.extend(self.active_updated(Some(buffer)));
         if let Some(prev) = previous
             && self.live
             && !self.connection_lost

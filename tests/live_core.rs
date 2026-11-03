@@ -1,10 +1,10 @@
-//! End-to-end tests against a real quasselcore. Skipped unless
-//! `QUASSEL_TEST_HOST` is set:
+//! End-to-end tests against a real quasselcore. They are `#[ignore]`d, so
+//! they run only with `--ignored`, and then need `QUASSEL_TEST_HOST`:
 //!
 //! ```sh
 //! QUASSEL_TEST_HOST=127.0.0.1 QUASSEL_TEST_PORT=4242 \
 //! QUASSEL_TEST_USER=tester QUASSEL_TEST_PASSWORD=secret \
-//! QUASSEL_TEST_INSECURE=1 cargo test --test live_core -- --nocapture
+//! QUASSEL_TEST_INSECURE=1 cargo test --test live_core -- --ignored --nocapture
 //! ```
 //!
 //! `QUASSEL_TEST_INSECURE=1` skips certificate verification (the usual

@@ -154,6 +154,9 @@ fn buffer_line(app: &App, theme: &Theme, buffer_id: BufferId, width: usize) -> L
 }
 
 fn truncate(text: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
     if text.width() <= width {
         return text.to_string();
     }

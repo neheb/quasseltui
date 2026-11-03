@@ -608,8 +608,10 @@ impl Dispatcher {
                 syncer.retain_buffers(|bid| {
                     i32_id(bid).is_some_and(|bid| buffers.contains_key(&BufferId(bid)))
                 });
-                // Adopt the core's persisted marker lines, without
-                // clobbering a marker placed in this session. -1 means none.
+                // Merge the core's persisted marker lines with ours, keeping
+                // whichever is further on: the core may be ahead after
+                // another client read, and we may be ahead after reading
+                // offline. -1 means none.
                 let markers: Vec<(i64, i64)> = syncer
                     .marker_lines_by_buffer
                     .iter()
@@ -623,6 +625,7 @@ impl Dispatcher {
                         state
                             .read_markers
                             .entry(BufferId(bid))
+                            .and_modify(|m| *m = (*m).max(MsgId(mid)))
                             .or_insert(MsgId(mid));
                     }
                 }

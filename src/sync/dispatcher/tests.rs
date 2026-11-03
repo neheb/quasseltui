@@ -855,6 +855,20 @@ fn network_lifecycle_rpcs() {
 }
 
 #[test]
+fn marker_lines_advance_stale_local_markers() {
+    let mut h = Harness::new(&[1], vec![buffer(1, 1, BufferType::Channel, "#1")]);
+    h.state.read_markers.insert(BufferId(1), MsgId(50));
+    let mut markers = VariantMap::new();
+    markers.insert("1".into(), mid(100));
+    h.init(
+        b"BufferSyncer",
+        "",
+        map(vec![("MarkerLines", Variant::Map(markers))]),
+    );
+    assert_eq!(h.state.read_markers[&BufferId(1)], MsgId(100));
+}
+
+#[test]
 fn marker_lines_seed_without_clobbering_local_markers() {
     let mut h = Harness::new(
         &[1],

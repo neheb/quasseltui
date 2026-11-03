@@ -153,13 +153,17 @@ pub fn omarchy_colors_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/omarchy/current/theme/colors.toml"))
 }
 
+/// Resolved path, mtime, length and a hash of the contents (an in-place
+/// rewrite can keep the first three on coarse-timestamp filesystems).
+type ThemeSignature = (PathBuf, Option<SystemTime>, u64, u64);
+
 /// Reloads the theme when the Omarchy theme changes.
 pub struct ThemeWatcher {
     path: Option<PathBuf>,
     truecolor: bool,
     no_color: bool,
     /// What the path resolved to last time, and its mtime.
-    signature: Option<(PathBuf, Option<SystemTime>, u64)>,
+    signature: Option<ThemeSignature>,
 }
 
 impl ThemeWatcher {
@@ -180,11 +184,17 @@ impl ThemeWatcher {
         }
     }
 
-    fn signature_of(path: &Path) -> Option<(PathBuf, Option<SystemTime>, u64)> {
+    fn signature_of(path: &Path) -> Option<ThemeSignature> {
         // Resolve symlinks: a theme switch repoints `current/theme`.
         let resolved = std::fs::canonicalize(path).ok()?;
         let meta = std::fs::metadata(&resolved).ok()?;
-        Some((resolved, meta.modified().ok(), meta.len()))
+        let hash = std::fs::read(&resolved).map_or(0, |bytes| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            bytes.hash(&mut hasher);
+            hasher.finish()
+        });
+        Some((resolved, meta.modified().ok(), meta.len(), hash))
     }
 
     /// The current theme.

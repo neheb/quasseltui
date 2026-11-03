@@ -187,11 +187,8 @@ impl Network {
                 .or_else(|| map.get(b))
                 .and_then(Variant::as_map)
         };
-        if let Some(users) = pick("Users", "users") {
-            self.users_seed = explode_parallel_arrays(users, "nick", room)
-                .unwrap_or_else(|| legacy_seed(users, room));
-            insert_all_within(&mut self.users, self.users_seed.keys(), &mut room, "nick");
-        }
+        // Channels first: there are far fewer, and a network with none
+        // materialized shows every channel as unjoined.
         if let Some(channels) = pick("Channels", "channels") {
             self.channels_seed = explode_parallel_arrays(channels, "name", room)
                 .unwrap_or_else(|| legacy_seed(channels, room));
@@ -201,6 +198,11 @@ impl Network {
                 &mut room,
                 "channel",
             );
+        }
+        if let Some(users) = pick("Users", "users") {
+            self.users_seed = explode_parallel_arrays(users, "nick", room)
+                .unwrap_or_else(|| legacy_seed(users, room));
+            insert_all_within(&mut self.users, self.users_seed.keys(), &mut room, "nick");
         }
     }
 }

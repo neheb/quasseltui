@@ -2,8 +2,8 @@
 //! legacy binary `Features` bitmask.
 //!
 //! The negotiated set is the intersection of what we offer and what the
-//! core advertises. Three of the features change the `Message` user type's
-//! byte layout (`LongTime`, `SenderPrefixes`, `RichMessages`), so the set
+//! core advertises. Four of the features change the `Message` user type's
+//! byte layout (`LongTime`, `SenderPrefixes`, `RichMessages`, `LongMessageId`), so the set
 //! travels with every reader and writer.
 
 use std::fmt;
@@ -71,15 +71,18 @@ impl Features {
 
     /// Legacy binary bitmask for the features that have a legacy bit.
     ///
-    /// `ExtendedFeatures` (bit 15) is deliberately not set: setting it makes
-    /// some older cores change their `ClientInitAck` format in ways we don't
-    /// handle. The string `FeatureList` is enough for modern cores.
+    /// `ExtendedFeatures` (bit 15) is set whenever we offer anything, so
+    /// cores that understand it answer with their authoritative
+    /// `FeatureList` rather than leaving us to assume.
     pub fn to_bitmask(self) -> u32 {
+        let mut mask = 0;
         if self.contains(Self::SENDER_PREFIXES) {
-            LEGACY_SENDER_PREFIXES
-        } else {
-            0
+            mask |= LEGACY_SENDER_PREFIXES;
         }
+        if !self.is_empty() {
+            mask |= LEGACY_EXTENDED_FEATURES;
+        }
+        mask
     }
 
     /// Known features encoded in a legacy binary bitmask.
@@ -144,15 +147,18 @@ mod tests {
 
     #[test]
     fn features_without_legacy_bits_produce_zero() {
-        assert_eq!(Features::LONG_TIME.to_bitmask(), 0);
+        assert_eq!(
+            Features::LONG_TIME.to_bitmask() & !LEGACY_EXTENDED_FEATURES,
+            0
+        );
         assert_eq!(Features::empty().to_bitmask(), 0);
     }
 
     #[test]
-    fn default_features_never_set_extended_bit() {
+    fn default_features_set_extended_bit() {
         let mask = Features::client_default().to_bitmask();
         assert_ne!(mask & LEGACY_SENDER_PREFIXES, 0);
-        assert_eq!(mask & LEGACY_EXTENDED_FEATURES, 0);
+        assert_ne!(mask & LEGACY_EXTENDED_FEATURES, 0);
     }
 
     #[test]

@@ -7,7 +7,7 @@
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::protocol::features::LEGACY_SENDER_PREFIXES;
+use crate::protocol::features::{LEGACY_EXTENDED_FEATURES, LEGACY_SENDER_PREFIXES};
 use crate::protocol::framing::encode_frame;
 use crate::protocol::handshake::decode_handshake_payload;
 use crate::protocol::messages::CLIENT_LOGIN_REJECT;
@@ -61,7 +61,10 @@ async fn session_ready_is_first_and_disconnected_last() {
     assert_eq!(frames.len(), 2);
     let init = decode_handshake_payload(&frames[0]).unwrap();
     assert_eq!(init["MsgType"], Variant::String("ClientInit".into()));
-    assert_eq!(init["Features"], Variant::UInt(LEGACY_SENDER_PREFIXES));
+    assert_eq!(
+        init["Features"],
+        Variant::UInt(LEGACY_SENDER_PREFIXES | LEGACY_EXTENDED_FEATURES)
+    );
     assert_eq!(
         init["FeatureList"],
         Variant::StringList(vec![

@@ -121,6 +121,7 @@ stays there. The input bar shows `NORMAL` while you're in it.
 | `g` / `G` (normal) | First / last message |
 | `yy` (normal) | Copy the selected message to the clipboard (OSC 52) |
 | `Enter` (normal) | Place the read marker on the selected message |
+| `d` (normal) | Delete the current buffer and its history from the core, after asking (`Enter` deletes, `Esc` cancels). Part a channel first; status buffers can't be deleted |
 | `i` (normal) | Start typing |
 | Click a channel | Switch to it |
 | Double-click a channel | Join it, or part it if you're in it |

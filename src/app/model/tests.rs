@@ -1516,3 +1516,86 @@ fn leaving_a_buffer_moves_its_marker_to_what_was_on_screen() {
     );
     assert_eq!(app.state.read_markers[&BufferId(10)], MsgId(50));
 }
+
+#[test]
+fn d_deletes_a_buffer_after_confirming() {
+    let mut app = connected_app();
+    app.select_buffer(BufferId(11));
+    assert_eq!(app.focus, Focus::Log);
+
+    // d asks; other keys wait; Esc cancels.
+    assert!(app.on_key(key(KeyCode::Char('d'))).is_empty());
+    assert_eq!(app.pending_delete, Some(BufferId(11)));
+    assert!(app.on_key(key(KeyCode::Char('j'))).is_empty());
+    assert_eq!(app.active_buffer_id, Some(BufferId(11)));
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.pending_delete, None);
+    assert_eq!(app.focus, Focus::Log);
+
+    // Enter deletes.
+    app.on_key(key(KeyCode::Char('d')));
+    let effects = app.on_key(key(KeyCode::Enter));
+    assert_eq!(effects, [Effect::RemoveBuffer(BufferId(11))]);
+    assert_eq!(app.pending_delete, None);
+
+    // Queries can go too.
+    app.select_buffer(BufferId(12));
+    app.on_key(key(KeyCode::Char('d')));
+    let effects = app.on_key(key(KeyCode::Enter));
+    assert_eq!(effects, [Effect::RemoveBuffer(BufferId(12))]);
+}
+
+#[test]
+fn d_refuses_what_the_core_would() {
+    let mut app = connected_app();
+
+    // A joined channel: part first.
+    app.select_buffer(BufferId(10));
+    app.on_key(key(KeyCode::Char('d')));
+    assert_eq!(app.pending_delete, None);
+    assert!(app.toasts.back().unwrap().text.contains("Part #a first"));
+
+    // A status buffer.
+    let status = info(13, 1, BufferType::Status, "");
+    app.state.messages.insert(status.buffer_id, Vec::new());
+    app.state.buffers.insert(status.buffer_id, status);
+    app.select_buffer(BufferId(13));
+    app.on_key(key(KeyCode::Char('d')));
+    assert_eq!(app.pending_delete, None);
+    assert!(app.toasts.back().unwrap().text.contains("status buffer"));
+
+    // Joined while the prompt was up: checked again on Enter.
+    app.select_buffer(BufferId(11));
+    app.on_key(key(KeyCode::Char('d')));
+    assert_eq!(app.pending_delete, Some(BufferId(11)));
+    let net = app.state.networks.get_mut(&NetworkId(1)).unwrap();
+    net.channels.insert("#b".into());
+    assert!(app.on_key(key(KeyCode::Enter)).is_empty());
+    assert!(app.toasts.back().unwrap().text.contains("Part #b first"));
+
+    // Not connected to the core.
+    let mut app = App::new(state(), false, false);
+    app.on_client_event(&opened());
+    app.select_buffer(BufferId(12));
+    app.on_key(key(KeyCode::Char('d')));
+    assert_eq!(app.pending_delete, None);
+}
+
+#[test]
+fn a_pending_delete_ends_when_the_buffer_goes_or_on_a_click() {
+    let mut app = connected_app();
+    app.select_buffer(BufferId(12));
+    app.on_key(key(KeyCode::Char('d')));
+    // Deleted from another client meanwhile.
+    app.state.buffers.remove(&BufferId(12));
+    app.on_client_event(&ClientEvent::BufferRemoved {
+        buffer_id: BufferId(12),
+    });
+    assert_eq!(app.pending_delete, None);
+
+    app.select_buffer(BufferId(11));
+    app.on_key(key(KeyCode::Char('d')));
+    app.click_tree(TreeRow::Buffer(BufferId(10)), Instant::now());
+    assert_eq!(app.pending_delete, None);
+    assert_eq!(app.active_buffer_id, Some(BufferId(10)));
+}

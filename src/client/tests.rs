@@ -305,6 +305,7 @@ async fn requests_are_written_with_the_right_shapes() {
         .request_backlog_range(BufferId(10), MsgId(7), MsgId(90), 50)
         .await
         .unwrap();
+    handle.remove_buffer(BufferId(12)).await.unwrap();
     handle.close();
     drain(&mut client, &mut state).await;
 
@@ -378,6 +379,10 @@ async fn requests_are_written_with_the_right_shapes() {
                     Variant::Int(50),
                     Variant::Int(0),
                 ]
+            ),
+            (
+                b"requestRemoveBuffer".to_vec(),
+                vec![Variant::User(UserValue::BufferId(BufferId(12)))]
             ),
         ]
     );

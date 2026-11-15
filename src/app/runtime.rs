@@ -398,6 +398,11 @@ fn spawn_effect(client: &QuasselClient, effect: Effect, outcomes: mpsc::Unbounde
                 tracing::warn!("set_marker_line failed for buffer {buffer}: {error}");
             });
         }
+        Effect::RemoveBuffer(buffer) => {
+            let sent = handle.remove_buffer(buffer);
+            let text = "Delete buffer".to_string();
+            on_failure(sent, move |error| report(Failure::Command { text, error }));
+        }
         Effect::Reconnect | Effect::Copy(_) | Effect::Alert { .. } => {}
     }
 }

@@ -282,6 +282,18 @@ impl ClientHandle {
         self.buffer_syncer_request(b"requestSetMarkerLine", buffer_id, msg_id)
     }
 
+    /// Delete a buffer and its history. The core refuses a channel that's
+    /// still joined, and announces the removal with `removeBuffer`.
+    pub fn remove_buffer(&self, buffer_id: BufferId) -> Request {
+        let sync = SignalProxyMessage::Sync(SyncMessage {
+            class_name: buffer_syncer::CLASS_NAME.to_vec(),
+            object_name: String::new(),
+            slot_name: b"requestRemoveBuffer".to_vec(),
+            params: vec![Variant::User(UserValue::BufferId(buffer_id))],
+        });
+        self.send(sync, "send requestRemoveBuffer")
+    }
+
     /// Ask the core to connect a network to IRC, or disconnect it.
     pub fn set_network_connected(&self, network_id: NetworkId, connect: bool) -> Request {
         let slot: &[u8] = if connect {

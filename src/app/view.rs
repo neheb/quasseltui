@@ -303,15 +303,26 @@ fn render_input(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
     let inner = area.inner(Margin::new(1, 1));
     let width = usize::from(inner.width.max(1));
 
-    if let Some(paste) = &app.pending_paste {
+    let prompt = if let Some(paste) = &app.pending_paste {
         let target = app
             .active_buffer_id
             .and_then(|id| app.state.buffers.get(&id))
             .map_or_else(String::new, |info| format!(" to {}", buffer_label(info)));
-        let prompt = format!(
+        Some(format!(
             "Send {} pasted lines{target}? Enter sends · Esc cancels",
             paste.lines.len()
-        );
+        ))
+    } else {
+        app.pending_delete
+            .and_then(|id| app.state.buffers.get(&id))
+            .map(|info| {
+                format!(
+                    "Delete {} and its history? Enter deletes · Esc cancels",
+                    buffer_label(info)
+                )
+            })
+    };
+    if let Some(prompt) = prompt {
         let prompt = Paragraph::new(Span::styled(truncate(&prompt, width), theme.accent_style()))
             .block(input_block);
         frame.render_widget(prompt, area);
@@ -403,6 +414,10 @@ const HELP: &[(&str, &str)] = &[
     ("Ctrl+Q (or q in normal)", "Quit"),
     ("Ctrl+R", "Reconnect now (it also retries on its own)"),
     ("Esc / i", "Normal mode / typing"),
+    (
+        "d (normal)",
+        "Delete the buffer and its history (part first)",
+    ),
     ("Tab / Shift+Tab", "Typing: complete a nick"),
     (
         "Alt+Up / Alt+Down",
@@ -540,6 +555,20 @@ mod tests {
         let screen = draw(&mut app, 100, 20);
         assert!(screen.contains("Send 3 pasted lines to #"), "{screen}");
         assert!(screen.contains("Enter sends · Esc cancels"));
+    }
+
+    #[test]
+    fn pending_delete_shows_a_prompt() {
+        let mut app = App::new(build_demo_state(), false, false);
+        let buffer = app.active_buffer_id.unwrap();
+        app.pending_delete = Some(buffer);
+        let label = buffer_label(&app.state.buffers[&buffer]);
+        let screen = draw(&mut app, 100, 20);
+        assert!(
+            screen.contains(&format!("Delete {label} and its history?")),
+            "{screen}"
+        );
+        assert!(screen.contains("Enter deletes · Esc cancels"));
     }
 
     #[test]

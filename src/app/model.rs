@@ -137,6 +137,8 @@ pub enum Effect {
     },
     SetLastSeen(BufferId, MsgId),
     SetMarkerLine(BufferId, MsgId),
+    /// Delete a buffer and its history on the core.
+    RemoveBuffer(BufferId),
     /// Replace the client with a fresh connection over the same state.
     Reconnect,
     /// Put text on the system clipboard (via the terminal).
@@ -361,6 +363,8 @@ pub struct App {
     start_buffer: Option<BufferId>,
     /// A multi-line paste awaiting Enter (send) or Esc (cancel).
     pub pending_paste: Option<PendingPaste>,
+    /// A buffer `d` asked to delete, awaiting Enter (delete) or Esc.
+    pub pending_delete: Option<BufferId>,
     completion: Option<Completion>,
     // Bridge state for the current connection attempt.
     session_opened: bool,
@@ -401,6 +405,7 @@ impl App {
             last_alert: HashMap::new(),
             start_buffer: None,
             pending_paste: None,
+            pending_delete: None,
             completion: None,
             session_opened: false,
             presession_fatal: true,
@@ -532,6 +537,9 @@ impl App {
                 self.gaps.remove(buffer_id);
                 self.gap_pending.remove(buffer_id);
                 self.history_start.remove(buffer_id);
+                if self.pending_delete == Some(*buffer_id) {
+                    self.pending_delete = None;
+                }
                 if self.active_buffer_id == Some(*buffer_id) {
                     let replacement = pick_default_buffer(&self.state);
                     self.active_buffer_id = replacement;
@@ -1456,10 +1464,12 @@ impl App {
 
     // -- keys -------------------------------------------------------------------
 
-    /// Mouse input or a paste ends a half-typed `yy` and a Tab completion.
+    /// Mouse input or a paste ends a half-typed `yy`, a Tab completion
+    /// and an unconfirmed delete.
     fn cancel_pending(&mut self) {
         self.pending_yank = false;
         self.completion = None;
+        self.pending_delete = None;
     }
 
     /// A paste. One line goes into the input; several, merged with what
@@ -1533,6 +1543,64 @@ impl App {
         }
     }
 
+    /// Enter or Esc on a pending delete; other keys wait.
+    fn delete_key(&mut self, key: KeyEvent) -> Vec<Effect> {
+        match key.code {
+            KeyCode::Enter => match self.pending_delete.take() {
+                Some(buffer) => self.delete_buffer(buffer),
+                None => Vec::new(),
+            },
+            KeyCode::Esc => {
+                self.pending_delete = None;
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Why `info` can't be deleted now, if it can't. The core refuses to
+    /// delete a channel that's still joined, so say so up front.
+    fn delete_refusal(&self, info: &BufferInfo) -> Option<String> {
+        if !self.live || self.connection_lost {
+            return Some("Can't delete a buffer while disconnected from the core".to_string());
+        }
+        match info.kind {
+            BufferType::Status => Some("Can't delete a network's status buffer".to_string()),
+            BufferType::Channel if self.is_joined(info) => {
+                Some(format!("Part {} first to delete it", info.name))
+            }
+            _ => None,
+        }
+    }
+
+    /// `d`: ask to delete the active buffer.
+    fn ask_delete(&mut self) {
+        let Some(info) = self
+            .active_buffer_id
+            .and_then(|id| self.state.buffers.get(&id))
+            .cloned()
+        else {
+            return;
+        };
+        match self.delete_refusal(&info) {
+            Some(reason) => self.notify(&reason, Severity::Warning),
+            None => self.pending_delete = Some(info.buffer_id),
+        }
+    }
+
+    /// Confirmed: delete it, checking again in case things changed while
+    /// the prompt was up. The core announces the removal to every client.
+    fn delete_buffer(&mut self, buffer: BufferId) -> Vec<Effect> {
+        let Some(info) = self.state.buffers.get(&buffer).cloned() else {
+            return Vec::new();
+        };
+        if let Some(reason) = self.delete_refusal(&info) {
+            self.notify(&reason, Severity::Warning);
+            return Vec::new();
+        }
+        vec![Effect::RemoveBuffer(buffer)]
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> Vec<Effect> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -1546,6 +1614,9 @@ impl App {
         self.completion = None;
         if self.pending_paste.is_some() && !(ctrl && key.code == KeyCode::Char('q')) {
             return self.paste_key(key);
+        }
+        if self.pending_delete.is_some() && !(ctrl && key.code == KeyCode::Char('q')) {
+            return self.delete_key(key);
         }
 
         if self.show_help {
@@ -1685,6 +1756,7 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.log.highlight_last(&self.state),
             KeyCode::Char('y') if yank_started => return self.yank(),
             KeyCode::Char('y') => self.pending_yank = true,
+            KeyCode::Char('d') => self.ask_delete(),
             KeyCode::Char('?') => self.show_help = true,
             KeyCode::Char('q') => {
                 self.exit = Some(Exit {

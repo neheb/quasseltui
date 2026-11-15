@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`d` in normal mode deletes the current buffer** and its history on
+  the core, after asking (`Enter` deletes, `Esc` cancels). A joined
+  channel has to be parted first, and status buffers can't be deleted.
+
 ### Changed
 
 - **Building from source now needs Rust 1.99 or newer** (was 1.88).

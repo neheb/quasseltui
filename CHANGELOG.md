@@ -5,7 +5,7 @@ All notable changes to quasseltui are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] - 2026-11-14
 
 ### Added
 
@@ -20,6 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Esc` no longer toggles back to typing.** Like vim, it leaves typing
   for normal mode and does nothing once there; `i`, `a` or `Tab` start
   typing.
+
+### Fixed
+
+- **Read markers no longer move back after a reconnect**: the core's
+  marker and the local one are merged, keeping whichever is further on.
+- **Channels show as joined on very busy networks**: channels are now
+  loaded before users, so a huge user list can't crowd them out.
+- **Cores now send their full feature list**: quasseltui sets the
+  legacy `ExtendedFeatures` bit when it offers any features, so cores
+  that understand it answer with their `FeatureList`.
+- **Theme edits are picked up** even when a rewrite keeps the file's
+  size and timestamp.
 
 ## [0.12.0] - 2026-10-31
 
@@ -294,7 +306,7 @@ tests.
 
 - Expanded the README with additional usage examples.
 
-[Unreleased]: https://github.com/neheb/quasseltui/compare/v0.12.0...HEAD
+[0.13.0]: https://github.com/neheb/quasseltui/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/neheb/quasseltui/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/neheb/quasseltui/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/neheb/quasseltui/compare/v0.9.1...v0.10.0

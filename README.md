@@ -100,15 +100,15 @@ keeps that in `$XDG_STATE_HOME/quasseltui/last-buffer` (by default
 ## Keys
 
 quasseltui has two modes, like aerc or vim. You start out in **normal**
-mode, where single keys navigate; `i` (or `Esc` / `Tab`) switches to
-**typing**, and `Esc` switches back. The input bar shows `NORMAL`
-while you're in it.
+mode, where single keys navigate; `i` (or `a` / `Tab`) switches to
+**typing**, and `Esc` switches back. Like vim, `Esc` in normal mode
+stays there. The input bar shows `NORMAL` while you're in it.
 
 | Key | Action |
 | --- | --- |
 | `Ctrl+Q` (or `q` in normal mode) | Quit |
 | `Ctrl+R` | Reconnect now. After a disconnect quasseltui also retries on its own, backing off from 2s to once a minute; history is kept and the gap is re-fetched |
-| `Esc` | Switch between typing and normal mode (`Tab` also starts typing) |
+| `Esc` / `i` | Normal mode / typing (`a` and `Tab` also start typing) |
 | `Tab` / `Shift+Tab` (typing) | Complete a nick; press again to cycle |
 | `Alt+Up` / `Alt+Down` (or `Ctrl+P` / `Ctrl+N`) | Previous / next channel, in either mode |
 | `PgUp` / `PgDn`, mouse wheel | Scroll, in either mode |

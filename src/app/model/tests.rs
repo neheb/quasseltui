@@ -819,11 +819,18 @@ fn aerc_style_normal_mode() {
     app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT));
     assert_eq!(app.active_buffer_id, Some(BufferId(10)));
 
-    // i (or Esc, or Tab) goes back to typing.
+    // Esc in normal mode stays there, like vim.
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Log);
+    assert_eq!(app.input.value, "draft");
+
+    // i (or Tab) goes back to typing.
     app.on_key(key(KeyCode::Char('i')));
     assert_eq!(app.focus, Focus::Input);
     type_text(&mut app, "!");
     assert_eq!(app.input.value, "draft!");
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.focus, Focus::Log);
     app.on_key(key(KeyCode::Esc));
     assert_eq!(app.focus, Focus::Log);
     app.on_key(key(KeyCode::Tab));

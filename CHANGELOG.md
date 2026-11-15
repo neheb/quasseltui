@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Building from source now needs Rust 1.99 or newer** (was 1.88).
   Prebuilt release binaries are unaffected.
+- **`Esc` no longer toggles back to typing.** Like vim, it leaves typing
+  for normal mode and does nothing once there; `i`, `a` or `Tab` start
+  typing.
 
 ## [0.12.0] - 2026-10-31
 

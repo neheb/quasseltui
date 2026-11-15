@@ -1692,7 +1692,8 @@ impl App {
                     message: None,
                 });
             }
-            KeyCode::Esc | KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
+            // Esc stays in normal mode, like vim; it only cancels a `y`.
+            KeyCode::Char('i' | 'a') => self.set_focus(Focus::Input),
             KeyCode::Enter => {
                 if let (Some(buffer), Some(msg)) = (self.log.buffer, self.log.highlighted) {
                     return self.place_marker(buffer, msg);

@@ -402,7 +402,7 @@ fn render_toasts(frame: &mut Frame<'_>, app: &App, theme: &Theme, area: Rect) {
 const HELP: &[(&str, &str)] = &[
     ("Ctrl+Q (or q in normal)", "Quit"),
     ("Ctrl+R", "Reconnect now (it also retries on its own)"),
-    ("Esc", "Typing ↔ normal mode"),
+    ("Esc / i", "Normal mode / typing"),
     ("Tab / Shift+Tab", "Typing: complete a nick"),
     (
         "Alt+Up / Alt+Down",

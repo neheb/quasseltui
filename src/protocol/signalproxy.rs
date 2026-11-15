@@ -207,7 +207,7 @@ fn decode_init_data(rest: Vec<Variant>) -> Result<SignalProxyMessage> {
     let mut index = 0;
     while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
         let key = expect_bytes(key, &format!("key#{index}"), "InitData")?;
-        init_data.insert(String::from_utf8_lossy(&key).into_owned(), value);
+        init_data.insert(String::from_utf8_lossy_owned(key), value);
         index += 1;
     }
     Ok(SignalProxyMessage::InitData(InitData {
@@ -290,6 +290,7 @@ pub fn encode_signalproxy_payload(message: &SignalProxyMessage, features: Featur
 mod tests {
     use super::*;
     use crate::qt::variant::write_variant;
+    use std::assert_matches;
 
     fn round_trip(message: SignalProxyMessage) {
         let encoded = encode_signalproxy_payload(&message, Features::empty());
@@ -423,7 +424,7 @@ mod tests {
 
     fn decode_err(payload: &[u8]) -> String {
         let err = decode_signalproxy_payload(payload, Features::empty()).unwrap_err();
-        assert!(matches!(err, Error::SignalProxy(_)), "{err:?}");
+        assert_matches!(err, Error::SignalProxy(_));
         err.to_string()
     }
 

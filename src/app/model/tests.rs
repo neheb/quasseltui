@@ -10,6 +10,7 @@ use crate::protocol::Features;
 use crate::protocol::messages::SessionInit;
 use crate::protocol::types::{MessageType, NetworkId};
 use crate::sync::{IrcChannel, Network};
+use std::assert_matches;
 
 fn info(id: i32, net: i32, kind: BufferType, name: &str) -> BufferInfo {
     BufferInfo {
@@ -883,10 +884,10 @@ fn double_clicking_a_channel_joins_or_parts() {
     // Not joined: switch to it, then join.
     let effects = double_click(&mut app, TreeRow::Buffer(BufferId(11)), quick);
     assert_eq!(app.active_buffer_id, Some(BufferId(11)));
-    assert!(matches!(
+    assert_matches!(
         effects.last(),
         Some(Effect::SendCommand { text, .. }) if text == "/join #b"
-    ));
+    );
     // Too slow, or on different rows: no toggle.
     let effects = double_click(
         &mut app,

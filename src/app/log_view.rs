@@ -592,6 +592,7 @@ mod tests {
     use super::*;
     use crate::client::IrcMessage;
     use crate::protocol::types::{MessageFlags, MessageType, NetworkId};
+    use std::assert_matches;
 
     fn seg(text: &str) -> Vec<Segment> {
         vec![Segment {
@@ -705,12 +706,12 @@ mod tests {
         state.read_markers.insert(BufferId(1), MsgId(2));
         let rows = build_rows(&state, BufferId(1), today, &DisplaySettings::default());
         let keys: Vec<_> = rows.iter().map(|r| r.key).collect();
-        assert!(matches!(keys[0], RowKey::Date(_)));
+        assert_matches!(keys[0], RowKey::Date(_));
         assert_eq!(keys[1], RowKey::Message(MsgId(1)));
-        assert!(matches!(keys[2], RowKey::Date(_)));
+        assert_matches!(keys[2], RowKey::Date(_));
         assert_eq!(keys[3], RowKey::Message(MsgId(2)));
         assert_eq!(keys[4], RowKey::Marker);
-        assert!(matches!(keys[5], RowKey::Date(d) if d == today));
+        assert_matches!(keys[5], RowKey::Date(d) if d == today);
         assert_eq!(keys[6], RowKey::Message(MsgId(3)));
         assert!(rows[0].segments[0].text.contains("2026-01-05"));
     }
@@ -857,7 +858,7 @@ mod tests {
         v.scroll_home(&state);
         v.scroll_lines(&state, 20); // the top row is the marker (after msg 20)
         assert_eq!(v.visible(&state)[0].0, RowKey::Marker);
-        assert!(matches!(v.anchor, Some((MsgId(21), -1))));
+        assert_matches!(v.anchor, Some((MsgId(21), -1)));
         assert_eq!(v.visible(&state)[1].0, RowKey::Message(MsgId(21)));
         // Moving the marker elsewhere doesn't drag the view: msg 21 keeps
         // its place on screen.

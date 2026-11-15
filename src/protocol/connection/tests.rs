@@ -13,6 +13,7 @@ use crate::protocol::handshake::decode_handshake_payload;
 use crate::protocol::messages::CLIENT_LOGIN_REJECT;
 use crate::protocol::testing::*;
 use crate::qt::variant::Variant;
+use std::assert_matches;
 
 async fn run(opts: ConnectionOptions, fake: &Fake) -> (Vec<ProtocolEvent>, ConnectionHandle) {
     let conn = QuasselConnection::with_connector(opts, fake.connector.clone());
@@ -120,7 +121,7 @@ async fn tls_declined_aborts_before_client_init() {
     let ProtocolEvent::Disconnected { error, .. } = &events[0] else {
         unreachable!()
     };
-    assert!(matches!(error.as_deref(), Some(Error::TlsDowngrade(_))));
+    assert_matches!(error.as_deref(), Some(Error::TlsDowngrade(_)));
     assert_eq!(handle.state(), ConnState::Closed);
     // Nothing was written after the probe: no ClientInit, no credentials.
     assert!(fake.written.await.unwrap().is_empty());
@@ -130,7 +131,7 @@ async fn tls_declined_aborts_before_client_init() {
 async fn tls_enabled_triggers_upgrade() {
     let fake = fake_core(inbound(base_init_ack(), login_ack(), &[]), true, false);
     let (events, _) = run(options(true), &fake).await;
-    assert!(matches!(events[0], ProtocolEvent::SessionReady { .. }));
+    assert_matches!(events[0], ProtocolEvent::SessionReady { .. });
     assert!(fake.tls_called.load(Ordering::SeqCst));
 }
 
@@ -164,7 +165,7 @@ async fn unconfigured_core_is_rejected() {
     let ProtocolEvent::Disconnected { error, .. } = &events[0] else {
         unreachable!()
     };
-    assert!(matches!(error.as_deref(), Some(Error::NotConfigured(_))));
+    assert_matches!(error.as_deref(), Some(Error::NotConfigured(_)));
 }
 
 #[tokio::test]
@@ -217,9 +218,9 @@ async fn sync_and_rpc_events_arrive_in_order() {
     );
     let (events, _) = run(options(false), &fake).await;
     assert_eq!(events.len(), 4);
-    assert!(matches!(&events[1], ProtocolEvent::Sync(m) if *m == sync_msg("freenode")));
-    assert!(matches!(&events[2], ProtocolEvent::Rpc(m) if *m == rpc));
-    assert!(matches!(events[3], ProtocolEvent::Disconnected { .. }));
+    assert_matches!(&events[1], ProtocolEvent::Sync(m) if *m == sync_msg("freenode"));
+    assert_matches!(&events[2], ProtocolEvent::Rpc(m) if *m == rpc);
+    assert_matches!(events[3], ProtocolEvent::Disconnected { .. });
 }
 
 /// A stream that accepts a fixed number of writes and then fails every
@@ -314,7 +315,7 @@ async fn dead_connection_is_detected_by_liveness_watchdog() {
     let mut opts = options(false);
     opts.liveness_timeout = Duration::from_millis(50);
     let (events, handle) = run(opts, &fake).await;
-    assert!(matches!(events[0], ProtocolEvent::SessionReady { .. }));
+    assert_matches!(events[0], ProtocolEvent::SessionReady { .. });
     assert!(reason(events.last().unwrap()).contains("no data from core"));
     assert_eq!(handle.state(), ConnState::Closed);
 }
@@ -337,7 +338,7 @@ async fn stalled_consumer_ends_the_session_with_a_diagnosis() {
     }
     // The consumer was gone longer than the liveness timeout, so the
     // runner left the disconnect with the handle instead of waiting.
-    assert!(matches!(last, Some(ProtocolEvent::Sync(_))), "{last:?}");
+    assert_matches!(last, Some(ProtocolEvent::Sync(_)));
     let last = handle.take_undelivered().unwrap();
     assert!(
         reason(&last).contains("stopped processing events"),
@@ -467,10 +468,7 @@ async fn sends_are_written_and_close_ends_the_stream() {
     let fake = fake_core(inbound(base_init_ack(), login_ack(), &[]), false, true);
     let conn = QuasselConnection::with_connector(options(false), fake.connector.clone());
     let (handle, mut rx) = conn.start();
-    assert!(matches!(
-        rx.recv().await,
-        Some(ProtocolEvent::SessionReady { .. })
-    ));
+    assert_matches!(rx.recv().await, Some(ProtocolEvent::SessionReady { .. }));
 
     let request = SignalProxyMessage::InitRequest(InitRequest {
         class_name: b"BufferSyncer".to_vec(),
@@ -503,7 +501,7 @@ async fn send_before_connected_is_rejected() {
     let err = handle
         .send_nowait(SignalProxyMessage::HeartBeat(QDateTime::now_utc()))
         .unwrap_err();
-    assert!(matches!(err, Error::NotConnected(_)), "{err:?}");
+    assert_matches!(err, Error::NotConnected(_));
     assert!(err.to_string().contains("cannot send"), "{err}");
     handle.close();
 }

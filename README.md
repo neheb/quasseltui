@@ -9,7 +9,7 @@ no runtime to install.
 
 ## Quick start
 
-Install with Cargo (Rust 1.88 or newer; TLS uses the system OpenSSL):
+Install with Cargo (Rust 1.99 or newer; TLS uses the system OpenSSL):
 
 ```sh
 cargo install --git https://github.com/neheb/quasseltui --branch rust-port

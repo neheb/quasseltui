@@ -6,6 +6,7 @@ use crate::protocol::signalproxy::decode_signalproxy_payload;
 use crate::protocol::testing::*;
 use crate::protocol::types::{BufferType, Message, MessageFlags, MessageType};
 use crate::qt::variant::VariantMap;
+use std::assert_matches;
 
 fn buffer(id: i32, net: i32, name: &str) -> BufferInfo {
     BufferInfo {
@@ -91,10 +92,7 @@ async fn session_ready_fans_out_init_requests() {
 
     client.close();
     let rest = drain(&mut client, &mut state).await;
-    assert!(matches!(
-        rest.last(),
-        Some(ClientEvent::Disconnected { .. })
-    ));
+    assert_matches!(rest.last(), Some(ClientEvent::Disconnected { .. }));
     assert!(client.next_event(&mut state).await.is_none());
     assert_eq!(
         written(fake).await,
@@ -116,14 +114,8 @@ async fn disconnected_is_terminal() {
     let mut client = client_for(&fake);
     let mut state = ClientState::default();
     let events = drain(&mut client, &mut state).await;
-    assert!(matches!(
-        events.first(),
-        Some(ClientEvent::SessionOpened { .. })
-    ));
-    assert!(matches!(
-        events.last(),
-        Some(ClientEvent::Disconnected { .. })
-    ));
+    assert_matches!(events.first(), Some(ClientEvent::SessionOpened { .. }));
+    assert_matches!(events.last(), Some(ClientEvent::Disconnected { .. }));
     assert_eq!(
         events
             .iter()

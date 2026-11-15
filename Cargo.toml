@@ -2,7 +2,7 @@
 name = "quasseltui"
 version = "0.12.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.99"
 description = "Terminal client for Quassel IRC cores"
 license = "CC0-1.0"
 readme = "README.md"

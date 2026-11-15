@@ -188,6 +188,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn words(words: &[u32]) -> Vec<u8> {
         words.iter().flat_map(|w| w.to_be_bytes()).collect()
@@ -254,7 +255,7 @@ mod tests {
 
     fn reject(reply: &[u8], offered: ConnectionFeatures, needle: &str) {
         let err = parse_probe_reply(reply, offered).unwrap_err();
-        assert!(matches!(err, Error::Probe(_)), "{err:?}");
+        assert_matches!(err, Error::Probe(_));
         assert!(err.to_string().contains(needle), "{err} missing {needle}");
     }
 

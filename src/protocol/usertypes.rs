@@ -226,9 +226,7 @@ pub fn write_message(writer: &mut Writer, value: &Message) {
 }
 
 fn utf8_lossy(bytes: Option<Vec<u8>>) -> String {
-    bytes
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default()
+    bytes.map_or_default(String::from_utf8_lossy_owned)
 }
 
 /// Timestamp from epoch milliseconds, clamped to 0001-01-01..9999-12-31.

@@ -95,6 +95,7 @@ mod tests {
     use crate::protocol::types::{BufferId, BufferInfo, BufferType, NetworkId};
     use crate::protocol::usertypes::UserValue;
     use crate::qt::variant::type_id;
+    use std::assert_matches;
 
     fn map(entries: Vec<(&str, Variant)>) -> VariantMap {
         entries
@@ -217,7 +218,7 @@ mod tests {
         ]))));
         let mut reader = &data[..];
         let first = recv_handshake_message(&mut reader).await.unwrap();
-        assert!(matches!(first, HandshakeMessage::ClientInitAck(a) if a.configured));
+        assert_matches!(first, HandshakeMessage::ClientInitAck(a) if a.configured);
         let second = recv_handshake_message(&mut reader).await.unwrap();
         assert_eq!(
             second,
@@ -231,7 +232,7 @@ mod tests {
     async fn recv_wraps_binary_errors_as_handshake() {
         let data = encode_frame(b"\x00\x00\x00\x01\x00\x00\x00\xff\x00");
         let err = recv_handshake_message(&mut &data[..]).await.unwrap_err();
-        assert!(matches!(err, Error::Handshake(_)), "{err:?}");
+        assert_matches!(err, Error::Handshake(_));
         assert!(
             err.to_string()
                 .contains("failed to decode handshake payload")

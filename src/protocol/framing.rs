@@ -108,6 +108,7 @@ pub(crate) async fn read_exactly<R: AsyncRead + Unpin>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     #[tokio::test]
     async fn payload_memory_follows_the_data_not_the_header() {
@@ -168,13 +169,13 @@ mod tests {
         let err = read_frame(&mut reader, DEFAULT_MAX_FRAME_BYTES)
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::ConnectionClosed(_)), "{err:?}");
+        assert_matches!(err, Error::ConnectionClosed(_));
 
         let mut reader: &[u8] = b"\x00\x00\x00\x0aabc";
         let err = read_frame(&mut reader, DEFAULT_MAX_FRAME_BYTES)
             .await
             .unwrap_err();
-        assert!(matches!(err, Error::ConnectionClosed(_)), "{err:?}");
+        assert_matches!(err, Error::ConnectionClosed(_));
         assert!(err.to_string().contains("after 3 of 10"));
     }
 
@@ -182,7 +183,7 @@ mod tests {
     async fn oversize_frame_rejected_before_payload() {
         let mut reader: &[u8] = b"\x00\x10\x00\x00";
         let err = read_frame(&mut reader, 100).await.unwrap_err();
-        assert!(matches!(err, Error::FrameTooLarge(_)));
+        assert_matches!(err, Error::FrameTooLarge(_));
         assert!(err.to_string().contains("exceeds max_frame_bytes"));
     }
 

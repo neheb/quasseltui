@@ -84,10 +84,7 @@ pub fn truncate_bytes(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_string();
     }
-    let mut end = max_bytes.saturating_sub(MARK.len());
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = text.floor_char_boundary(max_bytes.saturating_sub(MARK.len()));
     format!("{}{MARK}", &text[..end])
 }
 

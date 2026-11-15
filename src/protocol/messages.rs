@@ -429,6 +429,7 @@ pub fn parse_handshake_message(data: &VariantMap) -> Result<HandshakeMessage> {
 mod tests {
     use super::*;
     use crate::protocol::types::{BufferId, BufferType};
+    use std::assert_matches;
 
     fn map(entries: Vec<(&str, Variant)>) -> VariantMap {
         entries
@@ -480,7 +481,7 @@ mod tests {
     fn out_of_range_core_features_is_rejected() {
         for bad in [Variant::Int(-1), Variant::LongLong(1 << 40)] {
             let err = ClientInitAck::from_map(&ack(vec![("CoreFeatures", bad)])).unwrap_err();
-            assert!(matches!(err, Error::Handshake(_)), "{err:?}");
+            assert_matches!(err, Error::Handshake(_));
         }
     }
 

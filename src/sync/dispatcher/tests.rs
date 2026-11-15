@@ -3,6 +3,7 @@ use chrono::{TimeZone, Utc};
 use super::*;
 use crate::protocol::types::{BufferInfo, BufferType, MessageFlags, MessageType};
 use crate::qt::variant::VariantMap;
+use std::assert_matches;
 
 fn map(entries: Vec<(&str, Variant)>) -> VariantMap {
     entries
@@ -125,7 +126,7 @@ fn empty_session_still_emits_session_opened() {
     let mut out = Vec::new();
     Dispatcher::new().seed_from_session(&mut state, &Arc::default(), Features::empty(), &mut out);
     assert_eq!(out.len(), 1);
-    assert!(matches!(out[0], ClientEvent::SessionOpened { .. }));
+    assert_matches!(out[0], ClientEvent::SessionOpened { .. });
     assert!(state.buffer_syncer.is_some());
 }
 
@@ -179,10 +180,10 @@ fn set_network_name_emits_network_updated() {
     let mut h = Harness::new(&[1], vec![]);
     h.sync(b"Network", "1", b"setNetworkName", vec!["Libera".into()]);
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         &events[..],
         [ClientEvent::NetworkUpdated { network_id: NetworkId(1), change: NetworkChange::Name(n) }] if n == "Libera"
-    ));
+    );
     assert_eq!(h.state.networks[&NetworkId(1)].network_name, "Libera");
     // Non-tracked slots mutate without an event.
     h.sync(b"Network", "1", b"setLatency", vec![Variant::Int(5)]);
@@ -296,10 +297,10 @@ fn network_init_data_emits_update_and_creates_children() {
         ]),
     );
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         &events[..],
         [ClientEvent::NetworkUpdated { change: NetworkChange::Name(n), .. }] if n == "Libera"
-    ));
+    );
     assert_eq!(h.state.users.get("1/seanr").unwrap().real_name, "Sean");
     assert_eq!(h.state.channels.get("1/#python").unwrap().topic, "hi");
 }
@@ -362,10 +363,10 @@ fn identity_init_data_re_emits_identity_added() {
     let mut h = Harness::new(&[], vec![]);
     h.init(b"Identity", "7", map(vec![("identityName", "work".into())]));
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         &events[..],
         [ClientEvent::IdentityAdded { identity_id: IdentityId(7), name }] if name == "work"
-    ));
+    );
     assert_eq!(h.state.identities[&IdentityId(7)].identity_name, "work");
 }
 
@@ -378,7 +379,7 @@ fn display_msg_emits_message_received() {
         vec![msg_variant(message(1, &info, "hello"))],
     );
     let events = h.take();
-    assert!(matches!(&events[..], [ClientEvent::MessageReceived(m)] if m.contents == "hello"));
+    assert_matches!(&events[..], [ClientEvent::MessageReceived(m)] if m.contents == "hello");
     assert_eq!(h.state.messages[&BufferId(10)].len(), 1);
 }
 
@@ -459,12 +460,12 @@ fn buffer_syncer_lifecycle() {
     h.state.read_markers.insert(BufferId(10), MsgId(5));
     assert!(h.state.claim_backlog(BufferId(10)));
     h.sync(b"BufferSyncer", "", b"removeBuffer", vec![bid(10)]);
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BufferRemoved {
             buffer_id: BufferId(10)
         }]
-    ));
+    );
     assert!(!h.state.buffers.contains_key(&BufferId(10)));
     assert!(!h.state.messages.contains_key(&BufferId(10)));
     assert!(!h.state.read_markers.contains_key(&BufferId(10)));
@@ -479,10 +480,10 @@ fn buffer_syncer_lifecycle() {
         b"renameBuffer",
         vec![bid(11), "#renamed".into()],
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BufferRenamed { buffer_id: BufferId(11), name }] if name == "#renamed"
-    ));
+    );
     assert_eq!(h.state.buffers[&BufferId(11)].name, "#renamed");
     assert_eq!(h.state.buffers[&BufferId(11)].kind, BufferType::Channel);
     // Renaming a buffer we don't have is ignored.
@@ -501,12 +502,12 @@ fn buffer_syncer_lifecycle() {
         b"mergeBuffersPermanently",
         vec![bid(12), bid(13)],
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BufferRemoved {
             buffer_id: BufferId(13)
         }]
-    ));
+    );
     assert!(h.state.buffers.contains_key(&BufferId(12)));
 }
 
@@ -547,7 +548,7 @@ fn backlog_count_is_what_survives_the_cap() {
             ),
         ),
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BacklogReceived {
             buffer_id: BufferId(10),
@@ -555,7 +556,7 @@ fn backlog_count_is_what_survives_the_cap() {
             received: 3,
             oldest: Some(MsgId(1)),
         }]
-    ));
+    );
     let ids: Vec<i64> = h.state.messages[&BufferId(10)]
         .iter()
         .map(|m| m.msg_id.0)
@@ -589,7 +590,7 @@ fn backlog_merge_dedupes_and_sorts() {
             ]),
         ),
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BacklogReceived {
             buffer_id: BufferId(10),
@@ -598,7 +599,7 @@ fn backlog_merge_dedupes_and_sorts() {
             received: 4,
             oldest: Some(MsgId(3)),
         }]
-    ));
+    );
     let msgs = &h.state.messages[&BufferId(10)];
     let ids: Vec<i64> = msgs.iter().map(|m| m.msg_id.0).collect();
     assert_eq!(ids, [3, 4, 5]);
@@ -618,10 +619,10 @@ fn backlog_edge_cases() {
         b"receiveBacklog",
         backlog_params(bid(10), Variant::List(vec![])),
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BacklogReceived { count: 0, .. }]
-    ));
+    );
 
     // A malformed payload still completes with zero.
     h.sync(
@@ -630,10 +631,10 @@ fn backlog_edge_cases() {
         b"receiveBacklog",
         backlog_params(bid(10), "junk".into()),
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::BacklogReceived { count: 0, .. }]
-    ));
+    );
 
     // A malformed buffer id is dropped without an event.
     h.sync(
@@ -805,13 +806,13 @@ fn network_disconnect_clears_rosters() {
     let mut h = setup_user_in_channel();
     h.sync(b"Network", "1", b"setConnected", vec![Variant::Bool(false)]);
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         &events[..],
         [ClientEvent::NetworkUpdated {
             change: NetworkChange::Connected(false),
             ..
         }]
-    ));
+    );
     assert!(!h.state.users.contains_key("1/alice"));
     assert!(!h.state.channels.contains_key("1/#chan"));
     assert!(h.state.networks[&NetworkId(1)].users.is_empty());
@@ -826,13 +827,13 @@ fn network_lifecycle_rpcs() {
         NETWORK_CREATED_SIGNAL,
         vec![Variant::User(UserValue::NetworkId(NetworkId(2)))],
     );
-    assert!(matches!(
+    assert_matches!(
         &h.take()[..],
         [ClientEvent::NetworkAdded {
             network_id: NetworkId(2),
             ..
         }]
-    ));
+    );
     h.rpc(NETWORK_CREATED_SIGNAL, vec![Variant::Int(2)]);
     assert!(h.take().is_empty());
 
@@ -915,7 +916,7 @@ fn buffer_activity_reported_on_init_and_sync() {
         ]),
     );
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         events.as_slice(),
         [
             ClientEvent::BufferActivity {
@@ -929,7 +930,7 @@ fn buffer_activity_reported_on_init_and_sync() {
                 highlights: 0
             },
         ]
-    ));
+    );
     // Another client read buffer 1.
     h.sync(
         b"BufferSyncer",
@@ -944,7 +945,7 @@ fn buffer_activity_reported_on_init_and_sync() {
         vec![bid(1), Variant::Int(0)],
     );
     let events = h.take();
-    assert!(matches!(
+    assert_matches!(
         events.as_slice(),
         [
             ClientEvent::BufferActivity {
@@ -958,7 +959,7 @@ fn buffer_activity_reported_on_init_and_sync() {
                 highlights: 0
             },
         ]
-    ));
+    );
 }
 
 #[test]
